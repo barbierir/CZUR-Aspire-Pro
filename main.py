@@ -181,6 +181,18 @@ class BookCaptureApp(QWidget):
         self.move_down_button = QPushButton("Sposta giù")
         self.move_down_button.clicked.connect(self._move_selected_page_down)
 
+        self.rotate_left_button = QPushButton("Ruota 90° ↺")
+        self.rotate_left_button.clicked.connect(lambda: self._rotate_selected_page(clockwise=False))
+
+        self.rotate_right_button = QPushButton("Ruota 90° ↻")
+        self.rotate_right_button.clicked.connect(lambda: self._rotate_selected_page(clockwise=True))
+
+        self.regenerate_selected_button = QPushButton("Rigenera elaborata")
+        self.regenerate_selected_button.clicked.connect(self._regenerate_processed_for_selected_page)
+
+        self.regenerate_last_button = QPushButton("Rigenera ultima elaborata")
+        self.regenerate_last_button.clicked.connect(self._regenerate_processed_for_last_page)
+
         self.session_file_list_widget = QListWidget()
         self.session_file_list_widget.currentRowChanged.connect(self._load_selected_session_image_preview)
         self.session_file_list_widget.setMinimumWidth(280)
@@ -197,6 +209,10 @@ class BookCaptureApp(QWidget):
         browser_controls_layout.addWidget(self.delete_last_page_button)
         browser_controls_layout.addWidget(self.move_up_button)
         browser_controls_layout.addWidget(self.move_down_button)
+        browser_controls_layout.addWidget(self.rotate_left_button)
+        browser_controls_layout.addWidget(self.rotate_right_button)
+        browser_controls_layout.addWidget(self.regenerate_selected_button)
+        browser_controls_layout.addWidget(self.regenerate_last_button)
         browser_controls_layout.addStretch()
 
         browser_content_layout = QHBoxLayout()
@@ -368,6 +384,156 @@ class BookCaptureApp(QWidget):
         if row < 0 or row >= len(self.session_list_files):
             return None
         return self._original_name_from_browser_item(self.session_list_files[row].name)
+
+    def _selected_original_path(self) -> Path | None:
+        if self.current_session_dir is None:
+            return None
+        selected_name = self._selected_original_page_name()
+        if selected_name is None:
+            return None
+        return self._session_originals_dir() / selected_name
+
+    def _stop_continuous_if_needed(self, action_label: str) -> str:
+        if self.continuous_state in (self.CONTINUOUS_RUNNING, self.CONTINUOUS_PAUSED):
+            self.stop_continuous_capture(update_status=False)
+            return f"Acquisizione continua fermata automaticamente prima di {action_label}. "
+        return ""
+
+    def _remove_processed_for_original(self, original_path: Path) -> tuple[bool, bool, str | None]:
+        processed_path = self._processed_path_for_original(original_path)
+        if not processed_path.exists():
+            return True, False, None
+        try:
+            processed_path.unlink()
+            return True, True, None
+        except Exception as exc:
+            return False, False, str(exc)
+
+    def _rotate_image_file(self, image_path: Path, clockwise: bool) -> tuple[bool, str | None]:
+        image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            return False, "file immagine non leggibile"
+
+        rotate_flag = cv2.ROTATE_90_CLOCKWISE if clockwise else cv2.ROTATE_90_COUNTERCLOCKWISE
+        rotated = cv2.rotate(image, rotate_flag)
+        if not cv2.imwrite(str(image_path), rotated):
+            return False, "scrittura file ruotato non riuscita"
+        return True, None
+
+    def _rotate_selected_page(self, clockwise: bool) -> None:
+        if self.current_session_dir is None:
+            self.status_label.setText("Rotazione non eseguita: nessuna sessione attiva")
+            return
+
+        original_path = self._selected_original_path()
+        if original_path is None:
+            self.status_label.setText("Rotazione non eseguita: seleziona una pagina nell'elenco")
+            return
+        if not original_path.exists():
+            self.status_label.setText("Rotazione non eseguita: originale corrispondente non trovato")
+            return
+
+        auto_stop_note = self._stop_continuous_if_needed("la rotazione")
+        rotate_ok, rotate_error = self._rotate_image_file(original_path, clockwise=clockwise)
+        if not rotate_ok:
+            self.status_label.setText(f"{auto_stop_note}Rotazione non riuscita: {rotate_error}")
+            self._refresh_session_file_list()
+            return
+
+        removed_ok, removed, remove_error = self._remove_processed_for_original(original_path)
+        if not removed_ok:
+            self.status_label.setText(
+                f"{auto_stop_note}Pagina ruotata ma rimozione elaborata non riuscita: {remove_error}"
+            )
+        elif removed:
+            self.status_label.setText(
+                f"{auto_stop_note}Pagina ruotata con successo: {original_path.name} | "
+                "Originale ruotato; versione elaborata rimossa, rigenerarla se necessario"
+            )
+        else:
+            self.status_label.setText(f"{auto_stop_note}Pagina ruotata con successo: {original_path.name}")
+
+        self._update_session_labels()
+        source = self.browser_source_selector.currentData()
+        if source == "processed":
+            selected_processed = self._processed_path_for_original(original_path)
+            self._refresh_session_file_list(selected_path=selected_processed if selected_processed.exists() else None)
+        else:
+            self._refresh_session_file_list(selected_path=original_path)
+
+    def _regenerate_processed_for_original(self, original_path: Path) -> tuple[bool, str]:
+        if not original_path.exists():
+            return False, "originale non trovato"
+
+        original_image = cv2.imread(str(original_path), cv2.IMREAD_COLOR)
+        if original_image is None:
+            return False, "impossibile leggere il file originale"
+
+        try:
+            processed_image, pipeline_message = self._build_processed_image(original_image)
+            processed_path = self._processed_path_for_original(original_path)
+            write_ok = cv2.imwrite(str(processed_path), processed_image)
+            if not write_ok:
+                return False, "scrittura file elaborato non riuscita"
+        except Exception as exc:
+            return False, str(exc)
+
+        success_message = f"Versione elaborata rigenerata: {processed_path.name}"
+        if pipeline_message:
+            success_message += f" | {pipeline_message}"
+        return True, success_message
+
+    def _regenerate_processed_for_selected_page(self) -> None:
+        if self.current_session_dir is None:
+            self.status_label.setText("Rigenerazione non eseguita: nessuna sessione attiva")
+            return
+
+        original_path = self._selected_original_path()
+        if original_path is None:
+            self.status_label.setText("Rigenerazione non eseguita: seleziona una pagina nell'elenco")
+            return
+
+        auto_stop_note = self._stop_continuous_if_needed("la rigenerazione")
+        ok, message = self._regenerate_processed_for_original(original_path)
+        if not ok:
+            self.status_label.setText(f"{auto_stop_note}Rigenerazione non riuscita: {message}")
+            self._refresh_session_file_list()
+            return
+
+        self._update_session_labels()
+        source = self.browser_source_selector.currentData()
+        if source == "processed":
+            selected_path = self._processed_path_for_original(original_path)
+        else:
+            selected_path = original_path
+        self._refresh_session_file_list(selected_path=selected_path)
+        self.status_label.setText(f"{auto_stop_note}{message}")
+
+    def _regenerate_processed_for_last_page(self) -> None:
+        if self.current_session_dir is None:
+            self.status_label.setText("Rigenerazione non eseguita: nessuna sessione attiva")
+            return
+
+        last_original = self._find_last_original_page()
+        if last_original is None:
+            self.status_label.setText("Rigenerazione non eseguita: nessuna pagina presente nella sessione")
+            return
+
+        auto_stop_note = self._stop_continuous_if_needed("la rigenerazione")
+        ok, message = self._regenerate_processed_for_original(last_original)
+        if not ok:
+            self.status_label.setText(f"{auto_stop_note}Rigenerazione non riuscita: {message}")
+            self._refresh_session_file_list()
+            return
+
+        self._update_session_labels()
+        source = self.browser_source_selector.currentData()
+        if source == "processed":
+            selected_path = self._processed_path_for_original(last_original)
+        else:
+            selected_path = last_original
+        self._refresh_session_file_list(selected_path=selected_path)
+        self.status_label.setText(f"{auto_stop_note}{message}")
 
     def _move_selected_page_up(self) -> None:
         self._move_selected_page(direction=-1)
@@ -997,14 +1163,18 @@ class BookCaptureApp(QWidget):
         if not self.save_processed_checkbox.isChecked():
             return True, None
 
-        processed_path = self._session_processed_dir() / f"{original_path.stem}_processed.jpg"
-        processed_image, message = self._build_processed_image(original_frame)
-        success = cv2.imwrite(str(processed_path), processed_image)
-        if not success:
+        try:
+            processed_image, pipeline_message = self._build_processed_image(original_frame)
+            processed_path = self._processed_path_for_original(original_path)
+            success = cv2.imwrite(str(processed_path), processed_image)
+            if not success:
+                return False, "Errore: versione elaborata non salvata"
+        except Exception:
             return False, "Errore: versione elaborata non salvata"
+
         base_message = f"Versione elaborata salvata: {processed_path}"
-        if message:
-            return True, f"{base_message} | {message}"
+        if pipeline_message:
+            return True, f"{base_message} | {pipeline_message}"
         return True, base_message
 
     def _save_last_frame(self, source: str) -> bool:
