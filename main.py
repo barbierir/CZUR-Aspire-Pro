@@ -1,10 +1,13 @@
+import re
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -14,6 +17,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -38,8 +42,9 @@ class BookCaptureApp(QWidget):
         self.device_path = device_path
         self.capture_dir = Path("captures")
         self.capture_dir.mkdir(parents=True, exist_ok=True)
-        self.processed_dir = self.capture_dir / "processed"
-        self.processed_dir.mkdir(parents=True, exist_ok=True)
+
+        self.current_session_name: str | None = None
+        self.current_session_dir: Path | None = None
 
         self.cap: cv2.VideoCapture | None = None
         self.last_frame = None
@@ -52,6 +57,7 @@ class BookCaptureApp(QWidget):
 
         self._build_ui()
         self._init_camera()
+        self._ensure_default_session()
 
         self.preview_timer = QTimer(self)
         self.preview_timer.timeout.connect(self.update_frame)
@@ -65,6 +71,7 @@ class BookCaptureApp(QWidget):
         self._update_session_count_label()
         self._refresh_session_info_labels()
         self._update_continuous_buttons()
+        self._update_session_labels()
 
     def _build_ui(self) -> None:
         self.setWindowTitle("Book Capture")
@@ -99,6 +106,25 @@ class BookCaptureApp(QWidget):
         self.interval_selector.addItem("3 secondi", userData=3000)
         self.interval_selector.addItem("5 secondi", userData=5000)
 
+        self.work_session_group = QGroupBox("Sessione di lavoro")
+        self.session_name_input = QLineEdit()
+        self.session_name_input.setPlaceholderText("es. libro_storia_cap1")
+        self.new_session_button = QPushButton("Nuova sessione")
+        self.new_session_button.clicked.connect(self._on_new_session_clicked)
+        self.active_session_dir_label = QLabel("Cartella sessione attiva: -")
+        self.pages_in_session_label = QLabel("Pagine nella sessione: 0")
+
+        session_input_layout = QHBoxLayout()
+        session_input_layout.addWidget(QLabel("Nome sessione:"))
+        session_input_layout.addWidget(self.session_name_input)
+        session_input_layout.addWidget(self.new_session_button)
+
+        session_layout = QVBoxLayout()
+        session_layout.addLayout(session_input_layout)
+        session_layout.addWidget(self.active_session_dir_label)
+        session_layout.addWidget(self.pages_in_session_label)
+        self.work_session_group.setLayout(session_layout)
+
         self.post_process_group = QGroupBox("Post-processing")
         self.save_processed_checkbox = QCheckBox("Salva anche versione elaborata")
         self.grayscale_checkbox = QCheckBox("Scala di grigi")
@@ -117,6 +143,20 @@ class BookCaptureApp(QWidget):
         pp_layout.addWidget(self.perspective_checkbox)
         pp_layout.addWidget(self.flattening_checkbox)
         self.post_process_group.setLayout(pp_layout)
+
+        self.export_group = QGroupBox("Export PDF")
+        self.pdf_source_selector = QComboBox()
+        self.pdf_source_selector.addItem("Originali", userData="originals")
+        self.pdf_source_selector.addItem("Elaborate", userData="processed")
+        self.export_pdf_button = QPushButton("Esporta PDF sessione")
+        self.export_pdf_button.clicked.connect(self._export_session_pdf)
+
+        export_layout = QHBoxLayout()
+        export_layout.addWidget(QLabel("Sorgente PDF:"))
+        export_layout.addWidget(self.pdf_source_selector)
+        export_layout.addWidget(self.export_pdf_button)
+        export_layout.addStretch()
+        self.export_group.setLayout(export_layout)
 
         self.exit_button = QPushButton("Esci")
         self.exit_button.clicked.connect(self.close)
@@ -137,7 +177,9 @@ class BookCaptureApp(QWidget):
         main_layout.addWidget(self.session_status_label)
         main_layout.addWidget(self.session_count_label)
         main_layout.addWidget(self.status_label)
+        main_layout.addWidget(self.work_session_group)
         main_layout.addWidget(self.post_process_group)
+        main_layout.addWidget(self.export_group)
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
@@ -149,6 +191,80 @@ class BookCaptureApp(QWidget):
         self.doc_crop_checkbox.setEnabled(enabled)
         self.perspective_checkbox.setEnabled(enabled)
         self.flattening_checkbox.setEnabled(enabled)
+
+    def _sanitize_session_name(self, raw_name: str) -> str:
+        candidate = (raw_name or "").strip().replace(" ", "_")
+        candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate)
+        candidate = candidate.strip("._-")
+        if not candidate:
+            return self._generate_default_session_name()
+        return candidate[:80]
+
+    @staticmethod
+    def _generate_default_session_name() -> str:
+        return f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    def _session_originals_dir(self) -> Path:
+        if self.current_session_dir is None:
+            raise ValueError("Sessione non inizializzata")
+        return self.current_session_dir / "originals"
+
+    def _session_processed_dir(self) -> Path:
+        if self.current_session_dir is None:
+            raise ValueError("Sessione non inizializzata")
+        return self.current_session_dir / "processed"
+
+    def _count_pages_in_current_session(self) -> int:
+        try:
+            originals_dir = self._session_originals_dir()
+        except ValueError:
+            return 0
+        if not originals_dir.exists():
+            return 0
+        return len(sorted(originals_dir.glob("page_*.jpg")))
+
+    def _update_session_labels(self) -> None:
+        if self.current_session_name is None or self.current_session_dir is None:
+            self.active_session_dir_label.setText("Cartella sessione attiva: -")
+            self.pages_in_session_label.setText("Pagine nella sessione: 0")
+            return
+
+        self.active_session_dir_label.setText(f"Cartella sessione attiva: {self.current_session_dir}")
+        self.pages_in_session_label.setText(f"Pagine nella sessione: {self._count_pages_in_current_session()}")
+
+    def _create_new_session(self, requested_name: str | None = None) -> bool:
+        session_name = self._sanitize_session_name(requested_name or "")
+        session_dir = self.capture_dir / session_name
+
+        try:
+            (session_dir / "originals").mkdir(parents=True, exist_ok=True)
+            (session_dir / "processed").mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self.status_label.setText(f"Errore: creazione sessione non riuscita ({exc})")
+            return False
+
+        self.current_session_name = session_name
+        self.current_session_dir = session_dir
+        self.session_capture_count = 0
+        self._update_session_count_label()
+        self._update_session_labels()
+        return True
+
+    def _ensure_default_session(self) -> None:
+        if self.current_session_dir is not None:
+            return
+        if self._create_new_session(self._generate_default_session_name()):
+            self.status_label.setText(f"Sessione iniziale pronta: {self.current_session_name}")
+
+    def _on_new_session_clicked(self) -> None:
+        if self.continuous_state in (self.CONTINUOUS_RUNNING, self.CONTINUOUS_PAUSED):
+            self.stop_continuous_capture(update_status=False)
+            self.status_label.setText("Acquisizione continua fermata automaticamente prima della nuova sessione")
+
+        requested = self.session_name_input.text()
+        if self._create_new_session(requested):
+            self.status_label.setText(f"Nuova sessione attiva: {self.current_session_name}")
+            self.session_name_input.clear()
 
     def _init_camera(self) -> None:
         self.cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
@@ -247,6 +363,9 @@ class BookCaptureApp(QWidget):
             f"Scatti sessione: {self.session_capture_count}",
         ]
 
+        if self.current_session_name:
+            lines.append(f"Progetto: {self.current_session_name}")
+
         if self.continuous_state == self.CONTINUOUS_RUNNING:
             lines.append(f"Prossimo scatto: {self._countdown_remaining_seconds():.1f}s")
         elif self.continuous_state == self.CONTINUOUS_PAUSED:
@@ -261,7 +380,7 @@ class BookCaptureApp(QWidget):
         margin_x = 12
         margin_y = 12
         line_height = 24
-        width = 470
+        width = 560
         height = margin_y * 2 + line_height * len(overlay_lines)
 
         dark_box = overlay_frame.copy()
@@ -313,7 +432,9 @@ class BookCaptureApp(QWidget):
         self.preview_label.setPixmap(scaled)
 
     def _next_capture_path(self) -> Path:
-        existing = sorted(self.capture_dir.glob("page_*.jpg"))
+        originals_dir = self._session_originals_dir()
+        existing = sorted(originals_dir.glob("page_*.jpg"))
+
         if not existing:
             next_index = 1
         else:
@@ -323,7 +444,7 @@ class BookCaptureApp(QWidget):
             except ValueError:
                 next_index = len(existing) + 1
 
-        return self.capture_dir / f"page_{next_index:04d}.jpg"
+        return originals_dir / f"page_{next_index:04d}.jpg"
 
     def _save_original_frame(self, frame, source: str, save_path: Path) -> bool:
         success = cv2.imwrite(str(save_path), frame)
@@ -555,7 +676,7 @@ class BookCaptureApp(QWidget):
         if not self.save_processed_checkbox.isChecked():
             return True, None
 
-        processed_path = self.processed_dir / f"{original_path.stem}_processed.jpg"
+        processed_path = self._session_processed_dir() / f"{original_path.stem}_processed.jpg"
         processed_image, message = self._build_processed_image(original_frame)
         success = cv2.imwrite(str(processed_path), processed_image)
         if not success:
@@ -570,6 +691,10 @@ class BookCaptureApp(QWidget):
             self.status_label.setText(f"Errore: nessun frame valido per scatto {source}")
             return False
 
+        if self.current_session_dir is None:
+            self.status_label.setText("Errore: nessuna sessione attiva")
+            return False
+
         save_path = self._next_capture_path()
         original_frame = self.last_frame.copy()
 
@@ -577,6 +702,7 @@ class BookCaptureApp(QWidget):
             return False
 
         if not self.save_processed_checkbox.isChecked():
+            self._update_session_labels()
             return True
 
         try:
@@ -585,6 +711,7 @@ class BookCaptureApp(QWidget):
             self.status_label.setText(
                 f"Foto salvata ({source}): {save_path} | Elaborazione non riuscita (errore inatteso)"
             )
+            self._update_session_labels()
             return True
 
         if processed_ok:
@@ -592,7 +719,45 @@ class BookCaptureApp(QWidget):
         else:
             self.status_label.setText(f"Foto salvata ({source}): {save_path} | {message}")
 
+        self._update_session_labels()
         return True
+
+    def _export_session_pdf(self) -> None:
+        if self.current_session_dir is None or self.current_session_name is None:
+            self.status_label.setText("Errore: nessuna sessione attiva per export PDF")
+            return
+
+        source = self.pdf_source_selector.currentData()
+        if source == "processed":
+            image_dir = self._session_processed_dir()
+            pattern = "page_*_processed.jpg"
+            pdf_name = f"{self.current_session_name}_processed.pdf"
+        else:
+            image_dir = self._session_originals_dir()
+            pattern = "page_*.jpg"
+            pdf_name = f"{self.current_session_name}_originals.pdf"
+
+        image_paths = sorted(image_dir.glob(pattern))
+        if not image_paths:
+            label = "elaborate" if source == "processed" else "originali"
+            self.status_label.setText(f"Export PDF non eseguito: nessuna immagine {label} nella sessione corrente")
+            return
+
+        pdf_path = self.current_session_dir / pdf_name
+        pil_images: list[Image.Image] = []
+        try:
+            for path in image_paths:
+                with Image.open(path) as opened:
+                    pil_images.append(opened.convert("RGB"))
+
+            first, *rest = pil_images
+            first.save(pdf_path, save_all=True, append_images=rest)
+            self.status_label.setText(f"PDF esportato con successo: {pdf_path}")
+        except Exception as exc:
+            self.status_label.setText(f"Errore durante export PDF: {exc}")
+        finally:
+            for img in pil_images:
+                img.close()
 
     def capture_photo(self) -> None:
         self._save_last_frame(source="manuale")
@@ -644,14 +809,15 @@ class BookCaptureApp(QWidget):
         self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
-    def stop_continuous_capture(self) -> None:
+    def stop_continuous_capture(self, update_status: bool = True) -> None:
         if self.continuous_timer.isActive():
             self.continuous_timer.stop()
 
         self.continuous_state = self.CONTINUOUS_STOPPED
         self.next_capture_deadline = None
         self.paused_remaining_ms = None
-        self.status_label.setText("Acquisizione continua fermata")
+        if update_status:
+            self.status_label.setText("Acquisizione continua fermata")
         self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
