@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -174,6 +175,12 @@ class BookCaptureApp(QWidget):
         self.delete_last_page_button = QPushButton("Elimina ultima pagina")
         self.delete_last_page_button.clicked.connect(self._delete_last_page)
 
+        self.move_up_button = QPushButton("Sposta su")
+        self.move_up_button.clicked.connect(self._move_selected_page_up)
+
+        self.move_down_button = QPushButton("Sposta giù")
+        self.move_down_button.clicked.connect(self._move_selected_page_down)
+
         self.session_file_list_widget = QListWidget()
         self.session_file_list_widget.currentRowChanged.connect(self._load_selected_session_image_preview)
         self.session_file_list_widget.setMinimumWidth(280)
@@ -188,6 +195,8 @@ class BookCaptureApp(QWidget):
         browser_controls_layout.addWidget(self.browser_source_selector)
         browser_controls_layout.addWidget(self.refresh_list_button)
         browser_controls_layout.addWidget(self.delete_last_page_button)
+        browser_controls_layout.addWidget(self.move_up_button)
+        browser_controls_layout.addWidget(self.move_down_button)
         browser_controls_layout.addStretch()
 
         browser_content_layout = QHBoxLayout()
@@ -343,6 +352,167 @@ class BookCaptureApp(QWidget):
         if not originals:
             return None
         return originals[-1]
+
+    @staticmethod
+    def _original_name_from_browser_item(item_name: str) -> str | None:
+        if item_name.endswith("_processed.jpg"):
+            candidate = item_name.removesuffix("_processed.jpg") + ".jpg"
+        else:
+            candidate = item_name
+        if re.fullmatch(r"page_\d{4}\.jpg", candidate):
+            return candidate
+        return None
+
+    def _selected_original_page_name(self) -> str | None:
+        row = self.session_file_list_widget.currentRow()
+        if row < 0 or row >= len(self.session_list_files):
+            return None
+        return self._original_name_from_browser_item(self.session_list_files[row].name)
+
+    def _move_selected_page_up(self) -> None:
+        self._move_selected_page(direction=-1)
+
+    def _move_selected_page_down(self) -> None:
+        self._move_selected_page(direction=1)
+
+    def _move_selected_page(self, direction: int) -> None:
+        if self.current_session_dir is None:
+            self.status_label.setText("Riordino non eseguito: nessuna sessione attiva")
+            return
+
+        selected_original = self._selected_original_page_name()
+        if selected_original is None:
+            self.status_label.setText("Riordino non eseguito: seleziona una pagina nell'elenco")
+            return
+
+        originals_dir = self._session_originals_dir()
+        ordered_originals = sorted(originals_dir.glob("page_*.jpg"), key=lambda p: p.name)
+        if not ordered_originals:
+            self.status_label.setText("Riordino non eseguito: nessuna pagina presente nella sessione")
+            return
+
+        auto_stop_note = ""
+        if self.continuous_state in (self.CONTINUOUS_RUNNING, self.CONTINUOUS_PAUSED):
+            self.stop_continuous_capture(update_status=False)
+            auto_stop_note = "Acquisizione continua fermata automaticamente prima del riordino. "
+
+        reorder_ok, new_selected_name, error = self._reorder_original_pages(
+            selected_original_name=selected_original,
+            direction=direction,
+            ordered_originals=ordered_originals,
+        )
+        if not reorder_ok:
+            prefix = f"{auto_stop_note}" if auto_stop_note else ""
+            self.status_label.setText(f"{prefix}Riordino non riuscito: {error}")
+            self._refresh_session_file_list()
+            self._update_session_labels()
+            return
+
+        self._update_session_labels()
+        selected_original_path = originals_dir / new_selected_name
+        source = self.browser_source_selector.currentData()
+        if source == "processed":
+            processed_selected = self._processed_path_for_original(selected_original_path)
+            selected_path = processed_selected if processed_selected.exists() else None
+        else:
+            selected_path = selected_original_path
+        self._refresh_session_file_list(selected_path=selected_path)
+        self.status_label.setText(f"{auto_stop_note}Pagina riordinata con successo: {new_selected_name}")
+
+    def _reorder_original_pages(
+        self,
+        selected_original_name: str,
+        direction: int,
+        ordered_originals: list[Path],
+    ) -> tuple[bool, str, str | None]:
+        names = [p.name for p in ordered_originals]
+        if selected_original_name not in names:
+            return False, "", "pagina selezionata non trovata tra gli originali"
+
+        selected_index = names.index(selected_original_name)
+        target_index = selected_index + direction
+        if target_index < 0:
+            return False, "", "la pagina è già la prima"
+        if target_index >= len(ordered_originals):
+            return False, "", "la pagina è già l'ultima"
+
+        ordered_originals[selected_index], ordered_originals[target_index] = (
+            ordered_originals[target_index],
+            ordered_originals[selected_index],
+        )
+        return self._renumber_session_files(ordered_originals, moved_original_name=selected_original_name)
+
+    def _renumber_session_files(
+        self,
+        ordered_originals: list[Path],
+        moved_original_name: str,
+    ) -> tuple[bool, str, str | None]:
+        rename_plan: list[tuple[Path, Path]] = []
+        selected_new_name = ""
+
+        for index, original_path in enumerate(ordered_originals, start=1):
+            new_original_name = f"page_{index:04d}.jpg"
+            new_original_path = self._session_originals_dir() / new_original_name
+            if original_path.name != new_original_name:
+                rename_plan.append((original_path, new_original_path))
+
+            current_processed_path = self._processed_path_for_original(original_path)
+            new_processed_path = self._session_processed_dir() / f"page_{index:04d}_processed.jpg"
+            if current_processed_path.exists() and current_processed_path != new_processed_path:
+                rename_plan.append((current_processed_path, new_processed_path))
+
+            if original_path.name == moved_original_name:
+                selected_new_name = new_original_name
+
+        if not selected_new_name and ordered_originals:
+            selected_new_name = "page_0001.jpg"
+
+        ok, error = self._safe_bulk_rename(rename_plan)
+        return ok, selected_new_name, error
+
+    @staticmethod
+    def _safe_bulk_rename(rename_pairs: list[tuple[Path, Path]]) -> tuple[bool, str | None]:
+        if not rename_pairs:
+            return True, None
+
+        unique_pairs: list[tuple[Path, Path]] = []
+        seen = set()
+        for src, dst in rename_pairs:
+            key = (src, dst)
+            if src == dst or key in seen:
+                continue
+            seen.add(key)
+            unique_pairs.append((src, dst))
+
+        temp_to_original: dict[Path, Path] = {}
+        temp_to_destination: dict[Path, Path] = {}
+        second_phase_done: list[tuple[Path, Path]] = []
+
+        try:
+            for src, dst in unique_pairs:
+                if not src.exists():
+                    raise FileNotFoundError(f"File non trovato durante la rinomina: {src.name}")
+                temp_name = f".tmp_reorder_{uuid4().hex}_{src.name}"
+                temp_path = src.with_name(temp_name)
+                src.rename(temp_path)
+                temp_to_original[temp_path] = src
+                temp_to_destination[temp_path] = dst
+
+            for temp_path, dst in temp_to_destination.items():
+                if dst.exists():
+                    raise FileExistsError(f"Destinazione già esistente durante la rinomina: {dst.name}")
+                temp_path.rename(dst)
+                second_phase_done.append((dst, temp_path))
+
+            return True, None
+        except Exception as exc:
+            for dst, temp_path in reversed(second_phase_done):
+                if dst.exists():
+                    dst.rename(temp_path)
+            for temp_path, original_path in reversed(list(temp_to_original.items())):
+                if temp_path.exists():
+                    temp_path.rename(original_path)
+            return False, str(exc)
 
     def _processed_path_for_original(self, original_path: Path) -> Path:
         return self._session_processed_dir() / f"{original_path.stem}_processed.jpg"
