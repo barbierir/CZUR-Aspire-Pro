@@ -1,6 +1,7 @@
 import re
 import sys
 import time
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,7 @@ class BookCaptureApp(QWidget):
         self.current_session_name: str | None = None
         self.current_session_dir: Path | None = None
         self.session_list_files: list[Path] = []
+        self.presets: dict[str, dict[str, bool]] = {}
 
         self.cap: cv2.VideoCapture | None = None
         self.last_frame = None
@@ -76,6 +78,8 @@ class BookCaptureApp(QWidget):
         self._refresh_session_info_labels()
         self._update_continuous_buttons()
         self._update_session_labels()
+        self._load_presets_from_disk()
+        self._refresh_preset_combo()
         self._refresh_session_file_list()
 
     def _build_ui(self) -> None:
@@ -148,6 +152,34 @@ class BookCaptureApp(QWidget):
         pp_layout.addWidget(self.perspective_checkbox)
         pp_layout.addWidget(self.flattening_checkbox)
         self.post_process_group.setLayout(pp_layout)
+
+        self.preset_group = QGroupBox("Preset post-processing")
+        self.preset_name_input = QLineEdit()
+        self.preset_name_input.setPlaceholderText("es. book_bw")
+        self.save_preset_button = QPushButton("Salva preset")
+        self.save_preset_button.clicked.connect(self._save_current_preset)
+
+        self.preset_combo = QComboBox()
+        self.load_preset_button = QPushButton("Carica preset")
+        self.load_preset_button.clicked.connect(self._load_selected_preset)
+        self.delete_preset_button = QPushButton("Elimina preset")
+        self.delete_preset_button.clicked.connect(self._delete_selected_preset)
+
+        preset_name_layout = QHBoxLayout()
+        preset_name_layout.addWidget(QLabel("Nome preset:"))
+        preset_name_layout.addWidget(self.preset_name_input)
+        preset_name_layout.addWidget(self.save_preset_button)
+
+        preset_load_layout = QHBoxLayout()
+        preset_load_layout.addWidget(QLabel("Preset disponibili:"))
+        preset_load_layout.addWidget(self.preset_combo)
+        preset_load_layout.addWidget(self.load_preset_button)
+        preset_load_layout.addWidget(self.delete_preset_button)
+
+        preset_layout = QVBoxLayout()
+        preset_layout.addLayout(preset_name_layout)
+        preset_layout.addLayout(preset_load_layout)
+        self.preset_group.setLayout(preset_layout)
 
         self.export_group = QGroupBox("Export PDF")
         self.pdf_source_selector = QComboBox()
@@ -245,6 +277,7 @@ class BookCaptureApp(QWidget):
         main_layout.addWidget(self.status_label)
         main_layout.addWidget(self.work_session_group)
         main_layout.addWidget(self.post_process_group)
+        main_layout.addWidget(self.preset_group)
         main_layout.addWidget(self.export_group)
         main_layout.addWidget(self.session_pages_group)
         main_layout.addLayout(button_layout)
@@ -258,6 +291,133 @@ class BookCaptureApp(QWidget):
         self.doc_crop_checkbox.setEnabled(enabled)
         self.perspective_checkbox.setEnabled(enabled)
         self.flattening_checkbox.setEnabled(enabled)
+
+    def _preset_file_path(self) -> Path:
+        return self.capture_dir / "presets.json"
+
+    def _collect_current_postprocess_settings(self) -> dict[str, bool]:
+        return {
+            "save_processed": self.save_processed_checkbox.isChecked(),
+            "grayscale": self.grayscale_checkbox.isChecked(),
+            "scanner_effect": self.scanner_checkbox.isChecked(),
+            "doc_crop": self.doc_crop_checkbox.isChecked(),
+            "perspective": self.perspective_checkbox.isChecked(),
+            "flattening": self.flattening_checkbox.isChecked(),
+        }
+
+    def _apply_postprocess_settings(self, settings: dict[str, bool]) -> None:
+        save_processed = bool(settings.get("save_processed", False))
+        self.save_processed_checkbox.setChecked(save_processed)
+        self.grayscale_checkbox.setChecked(bool(settings.get("grayscale", False)))
+        self.scanner_checkbox.setChecked(bool(settings.get("scanner_effect", False)))
+        self.doc_crop_checkbox.setChecked(bool(settings.get("doc_crop", False)))
+        self.perspective_checkbox.setChecked(bool(settings.get("perspective", False)))
+        self.flattening_checkbox.setChecked(bool(settings.get("flattening", False)))
+        self._on_save_processed_toggled(save_processed)
+
+    @staticmethod
+    def _is_valid_preset_payload(payload: object) -> bool:
+        if not isinstance(payload, dict):
+            return False
+
+        allowed_keys = {
+            "save_processed",
+            "grayscale",
+            "scanner_effect",
+            "doc_crop",
+            "perspective",
+            "flattening",
+        }
+        for preset_name, preset_data in payload.items():
+            if not isinstance(preset_name, str) or not preset_name.strip():
+                return False
+            if not isinstance(preset_data, dict):
+                return False
+            for key, value in preset_data.items():
+                if key not in allowed_keys or not isinstance(value, bool):
+                    return False
+        return True
+
+    def _load_presets_from_disk(self) -> None:
+        preset_path = self._preset_file_path()
+        self.presets = {}
+        if not preset_path.exists():
+            return
+
+        try:
+            with preset_path.open("r", encoding="utf-8") as fp:
+                loaded = json.load(fp)
+        except Exception as exc:
+            self.status_label.setText(f"Preset non caricati: file non valido ({exc})")
+            return
+
+        if not self._is_valid_preset_payload(loaded):
+            self.status_label.setText("Preset non caricati: struttura JSON non valida")
+            return
+
+        self.presets = loaded
+
+    def _save_presets_to_disk(self) -> bool:
+        preset_path = self._preset_file_path()
+        try:
+            preset_path.parent.mkdir(parents=True, exist_ok=True)
+            with preset_path.open("w", encoding="utf-8") as fp:
+                json.dump(self.presets, fp, indent=2, ensure_ascii=False, sort_keys=True)
+            return True
+        except Exception as exc:
+            self.status_label.setText(f"Errore salvataggio preset: {exc}")
+            return False
+
+    def _refresh_preset_combo(self) -> None:
+        selected_name = self.preset_combo.currentData()
+        self.preset_combo.clear()
+        for preset_name in sorted(self.presets.keys()):
+            self.preset_combo.addItem(preset_name, userData=preset_name)
+        if selected_name and selected_name in self.presets:
+            index = self.preset_combo.findData(selected_name)
+            if index >= 0:
+                self.preset_combo.setCurrentIndex(index)
+
+    def _save_current_preset(self) -> None:
+        preset_name = self.preset_name_input.text().strip()
+        if not preset_name:
+            self.status_label.setText("Salvataggio preset non eseguito: inserire un nome preset")
+            return
+
+        exists = preset_name in self.presets
+        self.presets[preset_name] = self._collect_current_postprocess_settings()
+        if not self._save_presets_to_disk():
+            return
+
+        self._refresh_preset_combo()
+        index = self.preset_combo.findData(preset_name)
+        if index >= 0:
+            self.preset_combo.setCurrentIndex(index)
+        if exists:
+            self.status_label.setText(f"Preset sovrascritto: {preset_name}")
+        else:
+            self.status_label.setText(f"Preset salvato: {preset_name}")
+
+    def _load_selected_preset(self) -> None:
+        preset_name = self.preset_combo.currentData()
+        if not preset_name or preset_name not in self.presets:
+            self.status_label.setText("Caricamento preset non eseguito: nessun preset selezionato")
+            return
+
+        self._apply_postprocess_settings(self.presets[preset_name])
+        self.status_label.setText(f"Preset caricato: {preset_name}")
+
+    def _delete_selected_preset(self) -> None:
+        preset_name = self.preset_combo.currentData()
+        if not preset_name or preset_name not in self.presets:
+            self.status_label.setText("Eliminazione preset non eseguita: nessun preset selezionato")
+            return
+
+        del self.presets[preset_name]
+        if not self._save_presets_to_disk():
+            return
+        self._refresh_preset_combo()
+        self.status_label.setText(f"Preset eliminato: {preset_name}")
 
     def _sanitize_session_name(self, raw_name: str) -> str:
         candidate = (raw_name or "").strip().replace(" ", "_")
