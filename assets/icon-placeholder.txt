@@ -1,0 +1,7 @@
+Place your application icon at assets/icon.png (recommended: 256x256 PNG).
+
+The installer will copy it to:
+  ~/.local/share/icons/hicolor/256x256/apps/book-capture.png
+
+If icon.png is missing, installation still works and the desktop environment
+will show a generic fallback icon.

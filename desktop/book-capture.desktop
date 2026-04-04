@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Book Capture
+Comment=Camera-based book scanning tool
+Exec=book-capture
+Icon=book-capture
+Terminal=false
+Type=Application
+Categories=Utility;Graphics;
+StartupNotify=true
