@@ -3,11 +3,14 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -28,6 +31,8 @@ class BookCaptureApp(QWidget):
         self.device_path = device_path
         self.capture_dir = Path("captures")
         self.capture_dir.mkdir(parents=True, exist_ok=True)
+        self.processed_dir = self.capture_dir / "processed"
+        self.processed_dir.mkdir(parents=True, exist_ok=True)
 
         self.cap: cv2.VideoCapture | None = None
         self.last_frame = None
@@ -41,12 +46,10 @@ class BookCaptureApp(QWidget):
         self._build_ui()
         self._init_camera()
 
-        # Timer preview live.
         self.preview_timer = QTimer(self)
         self.preview_timer.timeout.connect(self.update_frame)
         self.preview_timer.start(30)
 
-        # Timer separato per scatto continuo.
         self.continuous_timer = QTimer(self)
         self.continuous_timer.timeout.connect(self._do_automatic_capture)
         self.continuous_timer.setSingleShot(False)
@@ -57,9 +60,8 @@ class BookCaptureApp(QWidget):
         self._update_continuous_buttons()
 
     def _build_ui(self) -> None:
-        """Costruisce la GUI principale."""
         self.setWindowTitle("Book Capture")
-        self.resize(980, 640)
+        self.resize(980, 680)
 
         self.preview_label = QLabel("Anteprima non disponibile")
         self.preview_label.setAlignment(Qt.AlignCenter)
@@ -90,6 +92,23 @@ class BookCaptureApp(QWidget):
         self.interval_selector.addItem("3 secondi", userData=3000)
         self.interval_selector.addItem("5 secondi", userData=5000)
 
+        self.post_process_group = QGroupBox("Post-processing")
+        self.save_processed_checkbox = QCheckBox("Salva anche versione elaborata")
+        self.grayscale_checkbox = QCheckBox("Scala di grigi")
+        self.scanner_checkbox = QCheckBox("Effetto scanner")
+        self.doc_crop_checkbox = QCheckBox("Auto-crop documento")
+        self.perspective_checkbox = QCheckBox("Correzione prospettiva")
+
+        self.save_processed_checkbox.toggled.connect(self._on_save_processed_toggled)
+
+        pp_layout = QVBoxLayout()
+        pp_layout.addWidget(self.save_processed_checkbox)
+        pp_layout.addWidget(self.grayscale_checkbox)
+        pp_layout.addWidget(self.scanner_checkbox)
+        pp_layout.addWidget(self.doc_crop_checkbox)
+        pp_layout.addWidget(self.perspective_checkbox)
+        self.post_process_group.setLayout(pp_layout)
+
         self.exit_button = QPushButton("Esci")
         self.exit_button.clicked.connect(self.close)
 
@@ -109,11 +128,19 @@ class BookCaptureApp(QWidget):
         main_layout.addWidget(self.session_status_label)
         main_layout.addWidget(self.session_count_label)
         main_layout.addWidget(self.status_label)
+        main_layout.addWidget(self.post_process_group)
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
+        self._on_save_processed_toggled(False)
+
+    def _on_save_processed_toggled(self, enabled: bool) -> None:
+        self.grayscale_checkbox.setEnabled(enabled)
+        self.scanner_checkbox.setEnabled(enabled)
+        self.doc_crop_checkbox.setEnabled(enabled)
+        self.perspective_checkbox.setEnabled(enabled)
+
     def _init_camera(self) -> None:
-        """Inizializza la camera V4L2 e imposta una risoluzione di base."""
         self.cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
 
         if not self.cap or not self.cap.isOpened():
@@ -130,12 +157,10 @@ class BookCaptureApp(QWidget):
         self.start_continuous_button.setEnabled(True)
 
     def _selected_interval_ms(self) -> int:
-        """Restituisce l'intervallo selezionato in millisecondi."""
         value = self.interval_selector.currentData()
         return int(value) if value is not None else 3000
 
     def _update_continuous_buttons(self) -> None:
-        """Allinea lo stato dei pulsanti della sessione continua."""
         if self.continuous_state == self.CONTINUOUS_RUNNING:
             self.start_continuous_button.setEnabled(False)
             self.pause_button.setEnabled(True)
@@ -157,7 +182,6 @@ class BookCaptureApp(QWidget):
             self.interval_selector.setEnabled(True)
 
     def _update_session_status_label(self) -> None:
-        """Aggiorna la label dedicata allo stato sessione continua."""
         mapping = {
             self.CONTINUOUS_STOPPED: "Sessione: ferma",
             self.CONTINUOUS_RUNNING: "Sessione: attiva",
@@ -166,11 +190,9 @@ class BookCaptureApp(QWidget):
         self.session_status_label.setText(mapping.get(self.continuous_state, "Sessione: sconosciuta"))
 
     def _update_session_count_label(self) -> None:
-        """Aggiorna la label con numero scatti automatici della sessione corrente."""
         self.session_count_label.setText(f"Scatti sessione: {self.session_capture_count}")
 
     def _refresh_session_info_labels(self) -> None:
-        """Aggiorna status sessione e countdown in modo non invasivo."""
         self._update_session_status_label()
 
         if self.continuous_state == self.CONTINUOUS_RUNNING:
@@ -181,18 +203,15 @@ class BookCaptureApp(QWidget):
             self.session_status_label.setText(f"Sessione: in pausa (countdown bloccato a {remaining_s:.1f}s)")
 
     def _reset_continuous_session(self) -> None:
-        """Resetta i campi di stato legati a una nuova sessione continua."""
         self.session_capture_count = 0
         self.paused_remaining_ms = None
         self.next_capture_deadline = None
         self._update_session_count_label()
 
     def _schedule_next_deadline_from_now(self) -> None:
-        """Imposta la deadline del prossimo scatto automatico."""
         self.next_capture_deadline = time.monotonic() + (self.continuous_interval_ms / 1000.0)
 
     def _countdown_remaining_seconds(self) -> float:
-        """Restituisce i secondi residui al prossimo scatto in base allo stato corrente."""
         if self.continuous_state == self.CONTINUOUS_RUNNING and self.next_capture_deadline is not None:
             return max(0.0, self.next_capture_deadline - time.monotonic())
 
@@ -202,12 +221,10 @@ class BookCaptureApp(QWidget):
         return 0.0
 
     def _register_automatic_capture_success(self) -> None:
-        """Registra uno scatto automatico riuscito nella sessione corrente."""
         self.session_capture_count += 1
         self._update_session_count_label()
 
     def _build_overlay_lines(self) -> list[str]:
-        """Costruisce il testo overlay da mostrare sulla preview."""
         overlay_state = {
             self.CONTINUOUS_STOPPED: "FERMA",
             self.CONTINUOUS_RUNNING: "ATTIVA",
@@ -228,7 +245,6 @@ class BookCaptureApp(QWidget):
         return lines
 
     def _build_preview_with_overlay(self, frame):
-        """Ritorna una copia del frame annotata (il frame originale resta intatto)."""
         overlay_frame = frame.copy()
         overlay_lines = self._build_overlay_lines()
 
@@ -259,7 +275,6 @@ class BookCaptureApp(QWidget):
         return overlay_frame
 
     def update_frame(self) -> None:
-        """Legge un frame dalla camera e aggiorna la preview."""
         self._refresh_session_info_labels()
 
         if not self.cap or not self.cap.isOpened():
@@ -288,7 +303,6 @@ class BookCaptureApp(QWidget):
         self.preview_label.setPixmap(scaled)
 
     def _next_capture_path(self) -> Path:
-        """Restituisce il prossimo nome file page_XXXX.jpg disponibile."""
         existing = sorted(self.capture_dir.glob("page_*.jpg"))
         if not existing:
             next_index = 1
@@ -301,28 +315,196 @@ class BookCaptureApp(QWidget):
 
         return self.capture_dir / f"page_{next_index:04d}.jpg"
 
+    def _save_original_frame(self, frame, source: str, save_path: Path) -> bool:
+        success = cv2.imwrite(str(save_path), frame)
+        if success:
+            self.status_label.setText(f"Foto salvata ({source}): {save_path}")
+            return True
+        self.status_label.setText(f"Errore: salvataggio foto {source} non riuscito")
+        return False
+
+    @staticmethod
+    def _ordered_quad_points(points: np.ndarray) -> np.ndarray:
+        pts = points.reshape(4, 2).astype("float32")
+        sums = pts.sum(axis=1)
+        diffs = pts[:, 0] - pts[:, 1]
+
+        top_left = pts[sums.argmin()]
+        bottom_right = pts[sums.argmax()]
+        top_right = pts[diffs.argmin()]
+        bottom_left = pts[diffs.argmax()]
+
+        return np.array([top_left, top_right, bottom_right, bottom_left], dtype="float32")
+
+    def _detect_document_corners(self, frame) -> tuple[np.ndarray | None, bool]:
+        h, w = frame.shape[:2]
+        if h < 50 or w < 50:
+            return None, False
+
+        target_height = 700
+        scale = min(1.0, target_height / float(h))
+        resized = cv2.resize(frame, (int(w * scale), int(h * scale)))
+
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 60, 180)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None, False
+
+        img_area = resized.shape[0] * resized.shape[1]
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+            perimeter = cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+            area = cv2.contourArea(approx)
+
+            if len(approx) != 4 or area < img_area * 0.15 or not cv2.isContourConvex(approx):
+                continue
+
+            corners = self._ordered_quad_points(approx)
+            widths = [
+                np.linalg.norm(corners[1] - corners[0]),
+                np.linalg.norm(corners[2] - corners[3]),
+            ]
+            heights = [
+                np.linalg.norm(corners[3] - corners[0]),
+                np.linalg.norm(corners[2] - corners[1]),
+            ]
+
+            if min(widths + heights) < 60:
+                continue
+
+            corners_full = corners / scale
+            return corners_full, True
+
+        return None, False
+
+    def _apply_document_crop(self, image, corners):
+        h, w = image.shape[:2]
+        xs = np.clip(corners[:, 0], 0, w - 1)
+        ys = np.clip(corners[:, 1], 0, h - 1)
+
+        x1, x2 = int(np.min(xs)), int(np.max(xs))
+        y1, y2 = int(np.min(ys)), int(np.max(ys))
+
+        if x2 <= x1 or y2 <= y1:
+            return image
+
+        return image[y1:y2, x1:x2].copy()
+
+    def _apply_perspective_transform(self, image, corners):
+        pts = self._ordered_quad_points(corners)
+
+        width_top = np.linalg.norm(pts[1] - pts[0])
+        width_bottom = np.linalg.norm(pts[2] - pts[3])
+        max_width = max(2, int(max(width_top, width_bottom)))
+
+        height_left = np.linalg.norm(pts[3] - pts[0])
+        height_right = np.linalg.norm(pts[2] - pts[1])
+        max_height = max(2, int(max(height_left, height_right)))
+
+        destination = np.array(
+            [
+                [0, 0],
+                [max_width - 1, 0],
+                [max_width - 1, max_height - 1],
+                [0, max_height - 1],
+            ],
+            dtype="float32",
+        )
+
+        matrix = cv2.getPerspectiveTransform(pts, destination)
+        return cv2.warpPerspective(image, matrix, (max_width, max_height))
+
+    def _apply_scanner_effect(self, image):
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+
+        normalized = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+        return cv2.adaptiveThreshold(
+            normalized,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31,
+            10,
+        )
+
+    def _build_processed_image(self, original_frame):
+        processed = original_frame.copy()
+        corners, reliable = self._detect_document_corners(processed)
+        reliability_message = None
+
+        if reliable and corners is not None:
+            if self.perspective_checkbox.isChecked():
+                processed = self._apply_perspective_transform(processed, corners)
+            elif self.doc_crop_checkbox.isChecked():
+                processed = self._apply_document_crop(processed, corners)
+        elif self.doc_crop_checkbox.isChecked() or self.perspective_checkbox.isChecked():
+            reliability_message = (
+                "Documento non rilevato con affidabilità sufficiente: "
+                "salvata elaborazione senza crop/prospettiva"
+            )
+
+        if self.grayscale_checkbox.isChecked():
+            processed = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+
+        if self.scanner_checkbox.isChecked():
+            processed = self._apply_scanner_effect(processed)
+
+        return processed, reliability_message
+
+    def _save_processed_frame(self, original_path: Path, original_frame) -> tuple[bool, str | None]:
+        if not self.save_processed_checkbox.isChecked():
+            return True, None
+
+        processed_path = self.processed_dir / f"{original_path.stem}_processed.jpg"
+        processed_image, message = self._build_processed_image(original_frame)
+        success = cv2.imwrite(str(processed_path), processed_image)
+        if not success:
+            return False, "Errore: versione elaborata non salvata"
+        if message:
+            return True, message
+        return True, f"Versione elaborata salvata: {processed_path}"
+
     def _save_last_frame(self, source: str) -> bool:
-        """Salva l'ultimo frame valido e aggiorna la status label."""
         if self.last_frame is None:
             self.status_label.setText(f"Errore: nessun frame valido per scatto {source}")
             return False
 
         save_path = self._next_capture_path()
-        success = cv2.imwrite(str(save_path), self.last_frame)
+        original_frame = self.last_frame.copy()
 
-        if success:
-            self.status_label.setText(f"Foto salvata ({source}): {save_path}")
+        if not self._save_original_frame(original_frame, source, save_path):
+            return False
+
+        if not self.save_processed_checkbox.isChecked():
             return True
 
-        self.status_label.setText(f"Errore: salvataggio foto {source} non riuscito")
-        return False
+        try:
+            processed_ok, message = self._save_processed_frame(save_path, original_frame)
+        except Exception:
+            self.status_label.setText(
+                f"Foto salvata ({source}): {save_path} | Elaborazione non riuscita (errore inatteso)"
+            )
+            return True
+
+        if processed_ok:
+            self.status_label.setText(f"Foto salvata ({source}): {save_path}" + (f" | {message}" if message else ""))
+        else:
+            self.status_label.setText(f"Foto salvata ({source}): {save_path} | {message}")
+
+        return True
 
     def capture_photo(self) -> None:
-        """Scatto singolo manuale."""
         self._save_last_frame(source="manuale")
 
     def start_continuous_capture(self) -> None:
-        """Avvia una sessione di acquisizione continua temporizzata."""
         if self.continuous_state != self.CONTINUOUS_STOPPED:
             return
 
@@ -342,7 +524,6 @@ class BookCaptureApp(QWidget):
         self._update_continuous_buttons()
 
     def pause_continuous_capture(self) -> None:
-        """Mette in pausa la sessione continua."""
         if self.continuous_state != self.CONTINUOUS_RUNNING:
             return
 
@@ -356,7 +537,6 @@ class BookCaptureApp(QWidget):
         self._update_continuous_buttons()
 
     def resume_continuous_capture(self) -> None:
-        """Riprende la sessione continua ripartendo da zero col timer."""
         if self.continuous_state != self.CONTINUOUS_PAUSED:
             return
 
@@ -372,7 +552,6 @@ class BookCaptureApp(QWidget):
         self._update_continuous_buttons()
 
     def stop_continuous_capture(self) -> None:
-        """Ferma completamente la sessione continua."""
         if self.continuous_timer.isActive():
             self.continuous_timer.stop()
 
@@ -384,7 +563,6 @@ class BookCaptureApp(QWidget):
         self._update_continuous_buttons()
 
     def _do_automatic_capture(self) -> None:
-        """Esegue uno scatto automatico durante la sessione continua."""
         if self.continuous_state != self.CONTINUOUS_RUNNING:
             return
 
@@ -393,8 +571,7 @@ class BookCaptureApp(QWidget):
 
         self._schedule_next_deadline_from_now()
 
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming convention)
-        """Rilascia timer e risorse OpenCV alla chiusura della finestra."""
+    def closeEvent(self, event) -> None:  # noqa: N802
         if hasattr(self, "preview_timer") and self.preview_timer.isActive():
             self.preview_timer.stop()
 
