@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -30,7 +31,12 @@ class BookCaptureApp(QWidget):
 
         self.cap: cv2.VideoCapture | None = None
         self.last_frame = None
+
         self.continuous_state = self.CONTINUOUS_STOPPED
+        self.continuous_interval_ms = 3000
+        self.next_capture_deadline: float | None = None
+        self.paused_remaining_ms: int | None = None
+        self.session_capture_count = 0
 
         self._build_ui()
         self._init_camera()
@@ -45,6 +51,9 @@ class BookCaptureApp(QWidget):
         self.continuous_timer.timeout.connect(self._do_automatic_capture)
         self.continuous_timer.setSingleShot(False)
 
+        self._update_session_status_label()
+        self._update_session_count_label()
+        self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
     def _build_ui(self) -> None:
@@ -57,6 +66,8 @@ class BookCaptureApp(QWidget):
         self.preview_label.setMinimumSize(800, 450)
         self.preview_label.setStyleSheet("background-color: #111; color: #ddd; border: 1px solid #444;")
 
+        self.session_status_label = QLabel("Sessione: ferma")
+        self.session_count_label = QLabel("Scatti sessione: 0")
         self.status_label = QLabel("Stato: inizializzazione...")
 
         self.capture_button = QPushButton("Scatta foto")
@@ -95,6 +106,8 @@ class BookCaptureApp(QWidget):
 
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.preview_label)
+        main_layout.addWidget(self.session_status_label)
+        main_layout.addWidget(self.session_count_label)
         main_layout.addWidget(self.status_label)
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
@@ -143,8 +156,112 @@ class BookCaptureApp(QWidget):
             self.stop_button.setEnabled(False)
             self.interval_selector.setEnabled(True)
 
+    def _update_session_status_label(self) -> None:
+        """Aggiorna la label dedicata allo stato sessione continua."""
+        mapping = {
+            self.CONTINUOUS_STOPPED: "Sessione: ferma",
+            self.CONTINUOUS_RUNNING: "Sessione: attiva",
+            self.CONTINUOUS_PAUSED: "Sessione: in pausa",
+        }
+        self.session_status_label.setText(mapping.get(self.continuous_state, "Sessione: sconosciuta"))
+
+    def _update_session_count_label(self) -> None:
+        """Aggiorna la label con numero scatti automatici della sessione corrente."""
+        self.session_count_label.setText(f"Scatti sessione: {self.session_capture_count}")
+
+    def _refresh_session_info_labels(self) -> None:
+        """Aggiorna status sessione e countdown in modo non invasivo."""
+        self._update_session_status_label()
+
+        if self.continuous_state == self.CONTINUOUS_RUNNING:
+            remaining_s = self._countdown_remaining_seconds()
+            self.session_status_label.setText(f"Sessione: attiva (prossimo scatto tra {remaining_s:.1f}s)")
+        elif self.continuous_state == self.CONTINUOUS_PAUSED:
+            remaining_s = self._countdown_remaining_seconds()
+            self.session_status_label.setText(f"Sessione: in pausa (countdown bloccato a {remaining_s:.1f}s)")
+
+    def _reset_continuous_session(self) -> None:
+        """Resetta i campi di stato legati a una nuova sessione continua."""
+        self.session_capture_count = 0
+        self.paused_remaining_ms = None
+        self.next_capture_deadline = None
+        self._update_session_count_label()
+
+    def _schedule_next_deadline_from_now(self) -> None:
+        """Imposta la deadline del prossimo scatto automatico."""
+        self.next_capture_deadline = time.monotonic() + (self.continuous_interval_ms / 1000.0)
+
+    def _countdown_remaining_seconds(self) -> float:
+        """Restituisce i secondi residui al prossimo scatto in base allo stato corrente."""
+        if self.continuous_state == self.CONTINUOUS_RUNNING and self.next_capture_deadline is not None:
+            return max(0.0, self.next_capture_deadline - time.monotonic())
+
+        if self.continuous_state == self.CONTINUOUS_PAUSED and self.paused_remaining_ms is not None:
+            return max(0.0, self.paused_remaining_ms / 1000.0)
+
+        return 0.0
+
+    def _register_automatic_capture_success(self) -> None:
+        """Registra uno scatto automatico riuscito nella sessione corrente."""
+        self.session_capture_count += 1
+        self._update_session_count_label()
+
+    def _build_overlay_lines(self) -> list[str]:
+        """Costruisce il testo overlay da mostrare sulla preview."""
+        overlay_state = {
+            self.CONTINUOUS_STOPPED: "FERMA",
+            self.CONTINUOUS_RUNNING: "ATTIVA",
+            self.CONTINUOUS_PAUSED: "PAUSA",
+        }.get(self.continuous_state, "SCONOSCIUTA")
+
+        lines = [
+            f"Device: {self.device_path}",
+            f"Sessione: {overlay_state}",
+            f"Scatti sessione: {self.session_capture_count}",
+        ]
+
+        if self.continuous_state == self.CONTINUOUS_RUNNING:
+            lines.append(f"Prossimo scatto: {self._countdown_remaining_seconds():.1f}s")
+        elif self.continuous_state == self.CONTINUOUS_PAUSED:
+            lines.append(f"Countdown in pausa: {self._countdown_remaining_seconds():.1f}s")
+
+        return lines
+
+    def _build_preview_with_overlay(self, frame):
+        """Ritorna una copia del frame annotata (il frame originale resta intatto)."""
+        overlay_frame = frame.copy()
+        overlay_lines = self._build_overlay_lines()
+
+        margin_x = 12
+        margin_y = 12
+        line_height = 24
+        width = 470
+        height = margin_y * 2 + line_height * len(overlay_lines)
+
+        dark_box = overlay_frame.copy()
+        cv2.rectangle(dark_box, (8, 8), (8 + width, 8 + height), (20, 20, 20), thickness=-1)
+        cv2.addWeighted(dark_box, 0.55, overlay_frame, 0.45, 0, overlay_frame)
+
+        y = 8 + margin_y + 12
+        for line in overlay_lines:
+            cv2.putText(
+                overlay_frame,
+                line,
+                (8 + margin_x, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.62,
+                (240, 240, 240),
+                1,
+                cv2.LINE_AA,
+            )
+            y += line_height
+
+        return overlay_frame
+
     def update_frame(self) -> None:
         """Legge un frame dalla camera e aggiorna la preview."""
+        self._refresh_session_info_labels()
+
         if not self.cap or not self.cap.isOpened():
             return
 
@@ -154,8 +271,9 @@ class BookCaptureApp(QWidget):
             return
 
         self.last_frame = frame
+        preview_frame = self._build_preview_with_overlay(frame)
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_rgb = cv2.cvtColor(preview_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame_rgb.shape
         bytes_per_line = ch * w
 
@@ -212,12 +330,15 @@ class BookCaptureApp(QWidget):
             self.status_label.setText("Errore: camera non disponibile per acquisizione continua")
             return
 
-        interval_ms = self._selected_interval_ms()
-        self.continuous_timer.start(interval_ms)
+        self._reset_continuous_session()
+        self.continuous_interval_ms = self._selected_interval_ms()
+        self._schedule_next_deadline_from_now()
+        self.continuous_timer.start(self.continuous_interval_ms)
         self.continuous_state = self.CONTINUOUS_RUNNING
         self.status_label.setText(
-            f"Acquisizione continua attiva: uno scatto ogni {interval_ms // 1000} secondi"
+            f"Acquisizione continua attiva: uno scatto ogni {self.continuous_interval_ms // 1000} secondi"
         )
+        self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
     def pause_continuous_capture(self) -> None:
@@ -225,9 +346,13 @@ class BookCaptureApp(QWidget):
         if self.continuous_state != self.CONTINUOUS_RUNNING:
             return
 
+        if self.next_capture_deadline is not None:
+            self.paused_remaining_ms = int(max(0.0, self.next_capture_deadline - time.monotonic()) * 1000)
+
         self.continuous_timer.stop()
         self.continuous_state = self.CONTINUOUS_PAUSED
         self.status_label.setText("Acquisizione continua in pausa")
+        self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
     def resume_continuous_capture(self) -> None:
@@ -235,12 +360,15 @@ class BookCaptureApp(QWidget):
         if self.continuous_state != self.CONTINUOUS_PAUSED:
             return
 
-        interval_ms = self._selected_interval_ms()
-        self.continuous_timer.start(interval_ms)
+        self.continuous_interval_ms = self._selected_interval_ms()
+        self.paused_remaining_ms = None
+        self._schedule_next_deadline_from_now()
+        self.continuous_timer.start(self.continuous_interval_ms)
         self.continuous_state = self.CONTINUOUS_RUNNING
         self.status_label.setText(
-            f"Acquisizione continua ripresa: uno scatto ogni {interval_ms // 1000} secondi"
+            f"Acquisizione continua ripresa: uno scatto ogni {self.continuous_interval_ms // 1000} secondi"
         )
+        self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
     def stop_continuous_capture(self) -> None:
@@ -249,7 +377,10 @@ class BookCaptureApp(QWidget):
             self.continuous_timer.stop()
 
         self.continuous_state = self.CONTINUOUS_STOPPED
+        self.next_capture_deadline = None
+        self.paused_remaining_ms = None
         self.status_label.setText("Acquisizione continua fermata")
+        self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
     def _do_automatic_capture(self) -> None:
@@ -257,7 +388,10 @@ class BookCaptureApp(QWidget):
         if self.continuous_state != self.CONTINUOUS_RUNNING:
             return
 
-        self._save_last_frame(source="automatico")
+        if self._save_last_frame(source="automatico"):
+            self._register_automatic_capture_success()
+
+        self._schedule_next_deadline_from_now()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming convention)
         """Rilascia timer e risorse OpenCV alla chiusura della finestra."""
