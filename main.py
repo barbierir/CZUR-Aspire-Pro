@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QListWidget,
+    QListWidgetItem,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -45,6 +47,7 @@ class BookCaptureApp(QWidget):
 
         self.current_session_name: str | None = None
         self.current_session_dir: Path | None = None
+        self.session_list_files: list[Path] = []
 
         self.cap: cv2.VideoCapture | None = None
         self.last_frame = None
@@ -72,6 +75,7 @@ class BookCaptureApp(QWidget):
         self._refresh_session_info_labels()
         self._update_continuous_buttons()
         self._update_session_labels()
+        self._refresh_session_file_list()
 
     def _build_ui(self) -> None:
         self.setWindowTitle("Book Capture")
@@ -158,6 +162,43 @@ class BookCaptureApp(QWidget):
         export_layout.addStretch()
         self.export_group.setLayout(export_layout)
 
+        self.session_pages_group = QGroupBox("Pagine sessione")
+        self.browser_source_selector = QComboBox()
+        self.browser_source_selector.addItem("Originali", userData="originals")
+        self.browser_source_selector.addItem("Elaborate", userData="processed")
+        self.browser_source_selector.currentIndexChanged.connect(self._on_browser_source_changed)
+
+        self.refresh_list_button = QPushButton("Aggiorna elenco")
+        self.refresh_list_button.clicked.connect(self._refresh_session_file_list)
+
+        self.delete_last_page_button = QPushButton("Elimina ultima pagina")
+        self.delete_last_page_button.clicked.connect(self._delete_last_page)
+
+        self.session_file_list_widget = QListWidget()
+        self.session_file_list_widget.currentRowChanged.connect(self._load_selected_session_image_preview)
+        self.session_file_list_widget.setMinimumWidth(280)
+
+        self.session_image_preview_label = QLabel("Nessuna immagine selezionata")
+        self.session_image_preview_label.setAlignment(Qt.AlignCenter)
+        self.session_image_preview_label.setMinimumSize(300, 220)
+        self.session_image_preview_label.setStyleSheet("background-color: #151515; color: #ddd; border: 1px solid #444;")
+
+        browser_controls_layout = QHBoxLayout()
+        browser_controls_layout.addWidget(QLabel("Sorgente elenco:"))
+        browser_controls_layout.addWidget(self.browser_source_selector)
+        browser_controls_layout.addWidget(self.refresh_list_button)
+        browser_controls_layout.addWidget(self.delete_last_page_button)
+        browser_controls_layout.addStretch()
+
+        browser_content_layout = QHBoxLayout()
+        browser_content_layout.addWidget(self.session_file_list_widget, 1)
+        browser_content_layout.addWidget(self.session_image_preview_label, 2)
+
+        browser_layout = QVBoxLayout()
+        browser_layout.addLayout(browser_controls_layout)
+        browser_layout.addLayout(browser_content_layout)
+        self.session_pages_group.setLayout(browser_layout)
+
         self.exit_button = QPushButton("Esci")
         self.exit_button.clicked.connect(self.close)
 
@@ -180,6 +221,7 @@ class BookCaptureApp(QWidget):
         main_layout.addWidget(self.work_session_group)
         main_layout.addWidget(self.post_process_group)
         main_layout.addWidget(self.export_group)
+        main_layout.addWidget(self.session_pages_group)
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
@@ -232,6 +274,113 @@ class BookCaptureApp(QWidget):
         self.active_session_dir_label.setText(f"Cartella sessione attiva: {self.current_session_dir}")
         self.pages_in_session_label.setText(f"Pagine nella sessione: {self._count_pages_in_current_session()}")
 
+    def _current_browser_source_dir(self) -> Path | None:
+        if self.current_session_dir is None:
+            return None
+        source = self.browser_source_selector.currentData()
+        if source == "processed":
+            return self._session_processed_dir()
+        return self._session_originals_dir()
+
+    def _clear_session_image_preview(self, placeholder: str = "Nessuna immagine selezionata") -> None:
+        self.session_image_preview_label.clear()
+        self.session_image_preview_label.setText(placeholder)
+
+    def _refresh_session_file_list(self, selected_path: Path | None = None) -> None:
+        source_dir = self._current_browser_source_dir()
+        self.session_file_list_widget.blockSignals(True)
+        self.session_file_list_widget.clear()
+        self.session_list_files = []
+
+        if source_dir is None or not source_dir.exists():
+            self.session_file_list_widget.blockSignals(False)
+            self._clear_session_image_preview()
+            return
+
+        source = self.browser_source_selector.currentData()
+        pattern = "page_*_processed.jpg" if source == "processed" else "page_*.jpg"
+        files = sorted(source_dir.glob(pattern), key=lambda p: p.name)
+        self.session_list_files = files
+
+        selected_row = -1
+        for index, path in enumerate(files):
+            item = QListWidgetItem(path.name)
+            self.session_file_list_widget.addItem(item)
+            if selected_path is not None and path == selected_path:
+                selected_row = index
+
+        if files:
+            if selected_row < 0:
+                selected_row = len(files) - 1
+            self.session_file_list_widget.setCurrentRow(selected_row)
+        self.session_file_list_widget.blockSignals(False)
+        self._load_selected_session_image_preview()
+
+    def _load_selected_session_image_preview(self, *_args) -> None:
+        row = self.session_file_list_widget.currentRow()
+        if row < 0 or row >= len(self.session_list_files):
+            self._clear_session_image_preview()
+            return
+
+        path = self.session_list_files[row]
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            self._clear_session_image_preview("Anteprima non disponibile")
+            self.status_label.setText(f"Immagine non leggibile: {path.name}")
+            return
+
+        scaled = pixmap.scaled(
+            self.session_image_preview_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.session_image_preview_label.setPixmap(scaled)
+
+    def _find_last_original_page(self) -> Path | None:
+        if self.current_session_dir is None:
+            return None
+        originals = sorted(self._session_originals_dir().glob("page_*.jpg"), key=lambda p: p.name)
+        if not originals:
+            return None
+        return originals[-1]
+
+    def _processed_path_for_original(self, original_path: Path) -> Path:
+        return self._session_processed_dir() / f"{original_path.stem}_processed.jpg"
+
+    def _on_browser_source_changed(self, *_args) -> None:
+        self._refresh_session_file_list()
+
+    def _delete_last_page(self) -> None:
+        if self.current_session_dir is None:
+            self.status_label.setText("Eliminazione non eseguita: nessuna sessione attiva")
+            return
+
+        if self.continuous_state in (self.CONTINUOUS_RUNNING, self.CONTINUOUS_PAUSED):
+            self.stop_continuous_capture(update_status=False)
+            self.status_label.setText("Acquisizione continua fermata automaticamente prima dell'eliminazione")
+
+        last_original = self._find_last_original_page()
+        if last_original is None:
+            self.status_label.setText("Eliminazione non eseguita: nessuna pagina presente nella sessione")
+            self._refresh_session_file_list()
+            self._update_session_labels()
+            return
+
+        processed_path = self._processed_path_for_original(last_original)
+        try:
+            last_original.unlink(missing_ok=True)
+            if processed_path.exists():
+                processed_path.unlink(missing_ok=True)
+        except Exception as exc:
+            self.status_label.setText(f"Errore eliminazione ultima pagina: {exc}")
+            self._refresh_session_file_list()
+            self._update_session_labels()
+            return
+
+        self._update_session_labels()
+        self.status_label.setText(f"Ultima pagina eliminata: {last_original.name}")
+        self._refresh_session_file_list()
+
     def _create_new_session(self, requested_name: str | None = None) -> bool:
         session_name = self._sanitize_session_name(requested_name or "")
         session_dir = self.capture_dir / session_name
@@ -248,6 +397,8 @@ class BookCaptureApp(QWidget):
         self.session_capture_count = 0
         self._update_session_count_label()
         self._update_session_labels()
+        self._refresh_session_file_list()
+        self._clear_session_image_preview()
         return True
 
     def _ensure_default_session(self) -> None:
@@ -703,6 +854,7 @@ class BookCaptureApp(QWidget):
 
         if not self.save_processed_checkbox.isChecked():
             self._update_session_labels()
+            self._refresh_session_file_list(selected_path=save_path)
             return True
 
         try:
@@ -720,6 +872,12 @@ class BookCaptureApp(QWidget):
             self.status_label.setText(f"Foto salvata ({source}): {save_path} | {message}")
 
         self._update_session_labels()
+        source = self.browser_source_selector.currentData()
+        if source == "processed":
+            selected = self._processed_path_for_original(save_path)
+            self._refresh_session_file_list(selected_path=selected if selected.exists() else None)
+        else:
+            self._refresh_session_file_list(selected_path=save_path)
         return True
 
     def _export_session_pdf(self) -> None:
