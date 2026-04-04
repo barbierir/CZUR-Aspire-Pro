@@ -125,6 +125,24 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## 🧩 Install as a native Linux desktop app (no sudo)
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+This installs everything in your user profile (`~/.local`) and adds:
+
+* a terminal launcher: `book-capture`
+* an application menu entry: **Book Capture**
+
+### Uninstall
+
+```bash
+./uninstall.sh
+```
+
 ---
 
 ## 🧪 Quick workflow
