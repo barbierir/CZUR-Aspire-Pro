@@ -1,6 +1,22 @@
 # 📚 Book Capture (Linux V4L2 Scanner App)
 
+![Python](https://img.shields.io/badge/Python-3.x-blue)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![Platform](https://img.shields.io/badge/Platform-Linux-informational)
+![Status](https://img.shields.io/badge/Status-Active%20%7C%20Experimental-orange)
+
 A practical **Linux book scanning app** for unsupported scanners and USB cameras: capture pages, process images, organize sessions, and export PDFs.
+
+## ⚡ Quick start
+
+```bash
+git clone https://github.com/<your-username>/CZUR-Aspire-Pro.git
+cd CZUR-Aspire-Pro
+./install.sh
+```
+
+> If your scanner does not work on Linux but appears as a camera (`/dev/video*`),
+> this app helps turn it into a practical, usable book-scanning workflow.
 
 ## Who is this for?
 
@@ -91,6 +107,21 @@ This removes user-level app files, launcher, desktop entry, and icon cache entry
 5. Reorder/fix pages in the session browser.
 6. Export the session to PDF.
 
+## Troubleshooting
+
+- **Device not found** → check whether your device appears under `/dev/video*` (`ls /dev/video*`).
+- **Permission denied / cannot open camera** → ensure your user is in the `video` group, then log out and back in.
+- **Black preview / frozen feed** → close other apps that might already be using the camera.
+- **Wrong camera selected** → switch camera index/device in app settings or reconnect only the target device.
+
+## Roadmap (optional)
+
+- OCR support and searchable PDF output
+- Improved export options and PDF quality presets
+- UI/UX refinements for faster page review
+- Better batch-processing workflows
+- More automation for repetitive capture tasks
+
 ## Keywords / discoverability
 
 This project is intentionally described with terms users search for, including:
@@ -118,10 +149,19 @@ If the device appears as a standard Linux video capture source, this project can
 
 ## Screenshots
 
-> Placeholder images — add screenshots as files become available.
+### Live capture view
+Real-time camera preview and page capture controls.
 
 ![Live capture view](docs/screenshot-live.png)
+
+### Session browser
+Manage captured pages, reorder items, and review session progress.
+
 ![Session browser](docs/screenshot-browser.png)
+
+### Post-processing and export
+Apply enhancements and export the final PDF.
+
 ![Post-processing and export](docs/screenshot-processing.png)
 
 ## Repository structure
@@ -152,6 +192,17 @@ If the device appears as a standard Linux video capture source, this project can
 - digitization
 - pdf
 - czur
+
+## Contributing & feedback
+
+Contributions are welcome — even small fixes help.
+
+If you find a bug or have an idea, open an issue with:
+- your distro and version
+- your camera/scanner model
+- what you expected vs what happened
+
+Friendly reports and practical suggestions are always appreciated.
 
 ## License
 
