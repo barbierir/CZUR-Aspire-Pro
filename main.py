@@ -1,5 +1,6 @@
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -25,6 +26,12 @@ class BookCaptureApp(QWidget):
     CONTINUOUS_STOPPED = "stopped"
     CONTINUOUS_RUNNING = "running"
     CONTINUOUS_PAUSED = "paused"
+
+    @dataclass
+    class FlatteningResult:
+        image: np.ndarray
+        applied: bool
+        message: str | None = None
 
     def __init__(self, device_path: str = "/dev/video2") -> None:
         super().__init__()
@@ -98,6 +105,7 @@ class BookCaptureApp(QWidget):
         self.scanner_checkbox = QCheckBox("Effetto scanner")
         self.doc_crop_checkbox = QCheckBox("Auto-crop documento")
         self.perspective_checkbox = QCheckBox("Correzione prospettiva")
+        self.flattening_checkbox = QCheckBox("Flattening sperimentale")
 
         self.save_processed_checkbox.toggled.connect(self._on_save_processed_toggled)
 
@@ -107,6 +115,7 @@ class BookCaptureApp(QWidget):
         pp_layout.addWidget(self.scanner_checkbox)
         pp_layout.addWidget(self.doc_crop_checkbox)
         pp_layout.addWidget(self.perspective_checkbox)
+        pp_layout.addWidget(self.flattening_checkbox)
         self.post_process_group.setLayout(pp_layout)
 
         self.exit_button = QPushButton("Esci")
@@ -139,6 +148,7 @@ class BookCaptureApp(QWidget):
         self.scanner_checkbox.setEnabled(enabled)
         self.doc_crop_checkbox.setEnabled(enabled)
         self.perspective_checkbox.setEnabled(enabled)
+        self.flattening_checkbox.setEnabled(enabled)
 
     def _init_camera(self) -> None:
         self.cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
@@ -435,10 +445,85 @@ class BookCaptureApp(QWidget):
             10,
         )
 
+    def _is_flattening_applicable(self, image) -> tuple[bool, str | None, np.ndarray | None]:
+        h, w = image.shape[:2]
+        if h < 280 or w < 280:
+            return False, "Flattening sperimentale non applicato: condizioni non adatte", None
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image.copy()
+        text_mask = cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            41,
+            11,
+        )
+        text_mask = cv2.medianBlur(text_mask, 3)
+
+        profile_values = np.full(w, np.nan, dtype=np.float32)
+        for x in range(w):
+            ys = np.flatnonzero(text_mask[:, x] > 0)
+            if ys.size < max(8, h // 45):
+                continue
+            low = np.percentile(ys, 10)
+            high = np.percentile(ys, 90)
+            profile_values[x] = float((low + high) / 2.0)
+
+        valid = ~np.isnan(profile_values)
+        valid_ratio = float(np.count_nonzero(valid)) / float(w)
+        if valid_ratio < 0.35:
+            return False, "Flattening sperimentale non applicato: condizioni non adatte", None
+
+        x_valid = np.flatnonzero(valid).astype(np.float32)
+        y_valid = profile_values[valid]
+        interpolated = np.interp(np.arange(w, dtype=np.float32), x_valid, y_valid)
+        smooth_profile = cv2.GaussianBlur(interpolated.reshape(1, -1), (0, 0), sigmaX=18).reshape(-1)
+
+        dev = smooth_profile - float(np.median(smooth_profile))
+        amplitude = float(np.max(np.abs(dev)))
+        if amplitude < 2.0 or amplitude > (h * 0.08):
+            return False, "Flattening sperimentale non applicato: condizioni non adatte", None
+
+        return True, None, dev
+
+    def _apply_experimental_flattening(self, image) -> FlatteningResult:
+        applicable, message, deformation = self._is_flattening_applicable(image)
+        if not applicable or deformation is None:
+            return self.FlatteningResult(image=image, applied=False, message=message)
+
+        try:
+            h, w = image.shape[:2]
+            max_shift = float(h * 0.05)
+            shifts = np.clip(deformation, -max_shift, max_shift).astype(np.float32)
+
+            map_x = np.tile(np.arange(w, dtype=np.float32), (h, 1))
+            map_y = np.tile(np.arange(h, dtype=np.float32).reshape(-1, 1), (1, w)) + shifts.reshape(1, -1)
+            map_y = np.clip(map_y, 0, h - 1)
+
+            flattened = cv2.remap(
+                image,
+                map_x,
+                map_y,
+                interpolation=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+            return self.FlatteningResult(
+                image=flattened,
+                applied=True,
+                message="Flattening sperimentale applicato",
+            )
+        except Exception:
+            return self.FlatteningResult(
+                image=image,
+                applied=False,
+                message="Elaborazione standard salvata: flattening non riuscito",
+            )
+
     def _build_processed_image(self, original_frame):
         processed = original_frame.copy()
         corners, reliable = self._detect_document_corners(processed)
-        reliability_message = None
+        pipeline_messages: list[str] = []
 
         if reliable and corners is not None:
             if self.perspective_checkbox.isChecked():
@@ -446,10 +531,16 @@ class BookCaptureApp(QWidget):
             elif self.doc_crop_checkbox.isChecked():
                 processed = self._apply_document_crop(processed, corners)
         elif self.doc_crop_checkbox.isChecked() or self.perspective_checkbox.isChecked():
-            reliability_message = (
+            pipeline_messages.append(
                 "Documento non rilevato con affidabilità sufficiente: "
                 "salvata elaborazione senza crop/prospettiva"
             )
+
+        if self.flattening_checkbox.isChecked():
+            flattening_result = self._apply_experimental_flattening(processed)
+            processed = flattening_result.image
+            if flattening_result.message:
+                pipeline_messages.append(flattening_result.message)
 
         if self.grayscale_checkbox.isChecked():
             processed = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
@@ -457,7 +548,8 @@ class BookCaptureApp(QWidget):
         if self.scanner_checkbox.isChecked():
             processed = self._apply_scanner_effect(processed)
 
-        return processed, reliability_message
+        message = " | ".join(pipeline_messages) if pipeline_messages else None
+        return processed, message
 
     def _save_processed_frame(self, original_path: Path, original_frame) -> tuple[bool, str | None]:
         if not self.save_processed_checkbox.isChecked():
@@ -468,9 +560,10 @@ class BookCaptureApp(QWidget):
         success = cv2.imwrite(str(processed_path), processed_image)
         if not success:
             return False, "Errore: versione elaborata non salvata"
+        base_message = f"Versione elaborata salvata: {processed_path}"
         if message:
-            return True, message
-        return True, f"Versione elaborata salvata: {processed_path}"
+            return True, f"{base_message} | {message}"
+        return True, base_message
 
     def _save_last_frame(self, source: str) -> bool:
         if self.last_frame is None:
