@@ -1,0 +1,6 @@
+# Example format for release checksums (replace hashes with real values)
+# Generate with:
+# sha256sum book-capture-x86_64.AppImage book-capture_0.1.0_amd64.deb > SHA256SUMS
+
+<sha256-hash>  book-capture-x86_64.AppImage
+<sha256-hash>  book-capture_0.1.0_amd64.deb

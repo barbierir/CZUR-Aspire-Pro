@@ -18,6 +18,16 @@ cd CZUR-Aspire-Pro
 > If your scanner does not work on Linux but appears as a camera (`/dev/video*`),
 > this app helps turn it into a practical, usable book-scanning workflow.
 
+## Downloads
+
+Get prebuilt binaries from the **GitHub Releases** page:
+
+- **AppImage**: download the latest `book-capture-x86_64.AppImage` for a portable, no-install run.
+- **`.deb` package**: download `book-capture_0.1.0_amd64.deb` for Ubuntu/Zorin-style installation.
+- **`install.sh`**: use the user-local installer when you prefer an install in `~/.local` from source files.
+
+If you prefer, you can always run directly from source (`python main.py`).
+
 ## Who is this for?
 
 This project is for Linux users who want reliable **document digitization on Linux** when vendor software is missing, unavailable, or Windows-only.
@@ -113,7 +123,7 @@ Build and install:
 
 ```bash
 ./deb/build-deb.sh
-sudo dpkg -i dist/book-capture_0.1_amd64.deb
+sudo dpkg -i dist/book-capture_0.1.0_amd64.deb
 ```
 
 ## Launching
