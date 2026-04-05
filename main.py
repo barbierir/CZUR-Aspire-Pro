@@ -39,6 +39,7 @@ class BookCaptureApp(QMainWindow):
     CONTINUOUS_STOPPED = "stopped"
     CONTINUOUS_RUNNING = "running"
     CONTINUOUS_PAUSED = "paused"
+    PRE_CAPTURE_BEEP_THRESHOLD_SECONDS = 0.4
 
     @dataclass
     class FlatteningResult:
@@ -66,6 +67,7 @@ class BookCaptureApp(QMainWindow):
         self.next_capture_deadline: float | None = None
         self.paused_remaining_ms: int | None = None
         self.session_capture_count = 0
+        self._beep_played_for_cycle = False
 
         self._build_ui()
         self._setup_shortcuts()
@@ -123,6 +125,11 @@ class BookCaptureApp(QMainWindow):
         self.interval_selector = QComboBox()
         self.interval_selector.addItem("3 secondi", userData=3000)
         self.interval_selector.addItem("5 secondi", userData=5000)
+        self.beep_before_capture_checkbox = QCheckBox("Beep before capture")
+        self.beep_before_capture_checkbox.setChecked(True)
+        self.show_countdown_checkbox = QCheckBox("Show countdown in status bar")
+        self.show_countdown_checkbox.setChecked(True)
+        self.show_countdown_checkbox.toggled.connect(self._on_show_countdown_toggled)
 
         self.work_session_group = QGroupBox("Sessione di lavoro")
         self.session_name_input = QLineEdit()
@@ -294,6 +301,8 @@ class BookCaptureApp(QMainWindow):
         button_layout.addStretch()
         button_layout.addWidget(self.interval_label)
         button_layout.addWidget(self.interval_selector)
+        button_layout.addWidget(self.beep_before_capture_checkbox)
+        button_layout.addWidget(self.show_countdown_checkbox)
         button_layout.addWidget(self.exit_button)
 
         scroll_content_widget = QWidget()
@@ -449,6 +458,13 @@ class BookCaptureApp(QMainWindow):
         self.doc_crop_checkbox.setEnabled(enabled)
         self.perspective_checkbox.setEnabled(enabled)
         self.flattening_checkbox.setEnabled(enabled)
+
+    def _on_show_countdown_toggled(self, enabled: bool) -> None:
+        if enabled and self.continuous_state == self.CONTINUOUS_RUNNING:
+            self._update_countdown_status()
+            return
+        if self.statusBar() is not None:
+            self.statusBar().clearMessage()
 
     def _preset_file_path(self) -> Path:
         return self.capture_dir / "presets.json"
@@ -1137,10 +1153,12 @@ class BookCaptureApp(QMainWindow):
         self.session_capture_count = 0
         self.paused_remaining_ms = None
         self.next_capture_deadline = None
+        self._beep_played_for_cycle = False
         self._update_session_count_label()
 
     def _schedule_next_deadline_from_now(self) -> None:
         self.next_capture_deadline = time.monotonic() + (self.continuous_interval_ms / 1000.0)
+        self._beep_played_for_cycle = False
 
     def _countdown_remaining_seconds(self) -> float:
         if self.continuous_state == self.CONTINUOUS_RUNNING and self.next_capture_deadline is not None:
@@ -1210,6 +1228,8 @@ class BookCaptureApp(QMainWindow):
 
     def update_frame(self) -> None:
         self._refresh_session_info_labels()
+        self._maybe_play_pre_capture_beep()
+        self._update_countdown_status()
 
         if not self.cap or not self.cap.isOpened():
             if self.last_preview_pixmap is None:
@@ -1223,6 +1243,30 @@ class BookCaptureApp(QMainWindow):
 
         self.last_frame = frame
         self._update_preview_from_frame(frame)
+
+    def _maybe_play_pre_capture_beep(self) -> None:
+        if self.continuous_state != self.CONTINUOUS_RUNNING:
+            return
+        if not self.beep_before_capture_checkbox.isChecked():
+            return
+        if self._beep_played_for_cycle:
+            return
+
+        remaining_s = self._countdown_remaining_seconds()
+        if 0.0 < remaining_s <= self.PRE_CAPTURE_BEEP_THRESHOLD_SECONDS:
+            QApplication.beep()
+            self._beep_played_for_cycle = True
+
+    def _update_countdown_status(self) -> None:
+        if self.continuous_state != self.CONTINUOUS_RUNNING:
+            return
+        if not self.show_countdown_checkbox.isChecked():
+            return
+        if self.statusBar() is None:
+            return
+
+        remaining_s = self._countdown_remaining_seconds()
+        self.statusBar().showMessage(f"Next capture in {remaining_s:.1f}s")
 
     def _next_capture_path(self) -> Path:
         originals_dir = self._session_originals_dir()
@@ -1594,6 +1638,7 @@ class BookCaptureApp(QMainWindow):
 
         self.continuous_timer.stop()
         self.continuous_state = self.CONTINUOUS_PAUSED
+        self._beep_played_for_cycle = False
         self._show_status_message("Acquisizione continua in pausa")
         self._refresh_session_info_labels()
         self._update_continuous_buttons()
@@ -1620,6 +1665,7 @@ class BookCaptureApp(QMainWindow):
         self.continuous_state = self.CONTINUOUS_STOPPED
         self.next_capture_deadline = None
         self.paused_remaining_ms = None
+        self._beep_played_for_cycle = False
         if update_status:
             self._show_status_message("Acquisizione continua fermata")
         self._refresh_session_info_labels()
