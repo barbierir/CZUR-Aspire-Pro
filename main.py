@@ -2,6 +2,7 @@ import re
 import sys
 import time
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ import cv2
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import QEvent, QTimer, Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -67,6 +68,7 @@ class BookCaptureApp(QMainWindow):
         self.session_capture_count = 0
 
         self._build_ui()
+        self._setup_shortcuts()
         self._init_camera()
         self._ensure_default_session()
 
@@ -355,6 +357,43 @@ class BookCaptureApp(QMainWindow):
         self._set_preview_placeholder()
         self._show_status_message("Stato: inizializzazione...")
 
+    def _setup_shortcuts(self) -> None:
+        self.shortcuts: list[QShortcut] = []
+        shortcuts_config: list[tuple[str, Callable[[], None]]] = [
+            ("Space", self.capture_photo),
+            ("Delete", self._delete_last_page),
+            ("Ctrl+Up", self._move_selected_page_up),
+            ("Ctrl+Down", self._move_selected_page_down),
+            ("Ctrl+R", self._regenerate_processed_for_selected_page),
+            ("P", self._handle_pause_resume_shortcut),
+            ("S", self._handle_start_stop_shortcut),
+        ]
+        for key_sequence, callback in shortcuts_config:
+            shortcut = QShortcut(QKeySequence(key_sequence), self)
+            shortcut.setContext(Qt.ApplicationShortcut)
+            shortcut.activated.connect(lambda cb=callback: self._activate_shortcut(cb))
+            self.shortcuts.append(shortcut)
+
+    def _focus_is_text_input(self) -> bool:
+        focused_widget = QApplication.focusWidget()
+        return isinstance(focused_widget, QLineEdit)
+
+    def _activate_shortcut(self, callback: Callable[[], None]) -> None:
+        if self._focus_is_text_input():
+            return
+        callback()
+
+    def _handle_pause_resume_shortcut(self) -> None:
+        if self.continuous_state == self.CONTINUOUS_RUNNING:
+            self.pause_continuous_capture()
+        elif self.continuous_state == self.CONTINUOUS_PAUSED:
+            self.resume_continuous_capture()
+
+    def _handle_start_stop_shortcut(self) -> None:
+        if self.continuous_state == self.CONTINUOUS_STOPPED:
+            self.start_continuous_capture()
+        else:
+            self.stop_continuous_capture()
 
     def _show_status_message(self, message: str, timeout_ms: int = 4000) -> None:
         if self.statusBar() is None:
