@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="book-capture-0.1.0"
+APP_ID="book-capture"
+APP_VERSION="0.1.0"
+APP_NAME="${APP_ID}-${APP_VERSION}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_ROOT="$ROOT_DIR/build/appimage"
@@ -12,7 +14,7 @@ APPIMAGE_TOOLS_DIR="$SCRIPT_DIR/tools"
 REQUIREMENTS_FILE="$ROOT_DIR/requirements.txt"
 MAIN_FILE="$ROOT_DIR/main.py"
 ICON_FILE="$ROOT_DIR/assets/icon.png"
-DESKTOP_FILE="$SCRIPT_DIR/${APP_NAME}.desktop"
+DESKTOP_FILE="$SCRIPT_DIR/${APP_ID}.desktop"
 APP_RUN_FILE="$SCRIPT_DIR/AppRun"
 
 log() {
@@ -26,6 +28,13 @@ fail() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
+}
+
+assert_file_exists() {
+  local file="$1"
+  local message="$2"
+
+  [[ -f "$file" ]] || fail "$message ($file)"
 }
 
 map_arch() {
@@ -68,7 +77,7 @@ ensure_appimagetool() {
 }
 
 build_launcher() {
-  local launcher="$APPDIR/usr/bin/$APP_NAME"
+  local launcher="$APPDIR/usr/bin/$APP_ID"
 
   cat > "$launcher" <<'LAUNCHER_EOF'
 #!/usr/bin/env bash
@@ -112,13 +121,11 @@ main() {
   need_cmd python3
   need_cmd rsync
 
-  [[ -f "$MAIN_FILE" ]] || fail "File not found: $MAIN_FILE"
-  [[ -f "$REQUIREMENTS_FILE" ]] || fail "File not found: $REQUIREMENTS_FILE"
-  [[ -f "$DESKTOP_FILE" ]] || fail "File not found: $DESKTOP_FILE"
-  [[ -f "$APP_RUN_FILE" ]] || fail "File not found: $APP_RUN_FILE"
-  if [[ ! -f "$ICON_FILE" ]]; then
-    log "Warning: $ICON_FILE not found, AppImage will be built without embedded icon"
-  fi
+  assert_file_exists "$MAIN_FILE" "Missing application entrypoint"
+  assert_file_exists "$REQUIREMENTS_FILE" "Missing requirements file"
+  assert_file_exists "$DESKTOP_FILE" "Missing AppImage desktop file"
+  assert_file_exists "$APP_RUN_FILE" "Missing AppRun file"
+  assert_file_exists "$ICON_FILE" "Missing AppImage icon source"
 
   local arch output appimagetool
   arch="$(map_arch)"
@@ -144,13 +151,15 @@ main() {
   cp "$APP_RUN_FILE" "$APPDIR/AppRun"
   chmod +x "$APPDIR/AppRun"
 
-  cp "$DESKTOP_FILE" "$APPDIR/${APP_NAME}.desktop"
-  cp "$DESKTOP_FILE" "$APPDIR/usr/share/applications/${APP_NAME}.desktop"
-  if [[ -f "$ICON_FILE" ]]; then
-    cp "$ICON_FILE" "$APPDIR/${APP_NAME}.png"
-  fi
+  cp "$DESKTOP_FILE" "$APPDIR/${APP_ID}.desktop"
+  cp "$DESKTOP_FILE" "$APPDIR/usr/share/applications/${APP_ID}.desktop"
+  cp "$ICON_FILE" "$APPDIR/${APP_ID}.png"
 
   build_launcher
+
+  assert_file_exists "$APPDIR/AppRun" "Pre-build check failed: AppRun not found"
+  assert_file_exists "$APPDIR/${APP_ID}.desktop" "Pre-build check failed: desktop file not found"
+  assert_file_exists "$APPDIR/${APP_ID}.png" "Pre-build check failed: icon file not found"
 
   mkdir -p "$DIST_DIR"
 
