@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QListWidget,
     QListWidgetItem,
+    QMainWindow,
+    QStatusBar,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -30,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 
-class BookCaptureApp(QWidget):
+class BookCaptureApp(QMainWindow):
     """Applicazione per anteprima V4L2, scatto singolo e acquisizione continua."""
 
     CONTINUOUS_STOPPED = "stopped"
@@ -99,7 +101,6 @@ class BookCaptureApp(QWidget):
 
         self.session_status_label = QLabel("Sessione: ferma")
         self.session_count_label = QLabel("Scatti sessione: 0")
-        self.status_label = QLabel("Stato: inizializzazione...")
 
         self.capture_button = QPushButton("Scatta foto")
         self.capture_button.clicked.connect(self.capture_photo)
@@ -304,7 +305,6 @@ class BookCaptureApp(QWidget):
         status_layout.setSpacing(12)
         status_layout.addWidget(self.session_status_label)
         status_layout.addWidget(self.session_count_label)
-        status_layout.addWidget(self.status_label, 1)
         scroll_content_layout.addLayout(status_layout)
 
         central_layout = QHBoxLayout()
@@ -338,12 +338,31 @@ class BookCaptureApp(QWidget):
         scroll_area.setWidget(scroll_content_widget)
 
         outer_layout = QVBoxLayout()
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
         outer_layout.addWidget(scroll_area, 1)
         outer_layout.addLayout(button_layout, 0)
-        self.setLayout(outer_layout)
+
+        central_widget = QWidget()
+        central_widget.setLayout(outer_layout)
+        self.setCentralWidget(central_widget)
+
+        status_bar = QStatusBar(self)
+        status_bar.setSizeGripEnabled(False)
+        self.setStatusBar(status_bar)
 
         self._on_save_processed_toggled(False)
         self._set_preview_placeholder()
+        self._show_status_message("Stato: inizializzazione...")
+
+
+    def _show_status_message(self, message: str, timeout_ms: int = 4000) -> None:
+        if self.statusBar() is None:
+            return
+        self.statusBar().showMessage(message, timeout_ms)
+
+    def _show_error_message(self, message: str, timeout_ms: int = 8000) -> None:
+        self._show_status_message(message, timeout_ms=timeout_ms)
 
     def _set_preview_placeholder(self, text: str = "Anteprima non disponibile") -> None:
         self.preview_label.clear()
@@ -448,11 +467,11 @@ class BookCaptureApp(QWidget):
             with preset_path.open("r", encoding="utf-8") as fp:
                 loaded = json.load(fp)
         except Exception as exc:
-            self.status_label.setText(f"Preset non caricati: file non valido ({exc})")
+            self._show_status_message(f"Preset non caricati: file non valido ({exc})")
             return
 
         if not self._is_valid_preset_payload(loaded):
-            self.status_label.setText("Preset non caricati: struttura JSON non valida")
+            self._show_status_message("Preset non caricati: struttura JSON non valida")
             return
 
         self.presets = loaded
@@ -465,7 +484,7 @@ class BookCaptureApp(QWidget):
                 json.dump(self.presets, fp, indent=2, ensure_ascii=False, sort_keys=True)
             return True
         except Exception as exc:
-            self.status_label.setText(f"Errore salvataggio preset: {exc}")
+            self._show_error_message(f"Errore salvataggio preset: {exc}")
             return False
 
     def _refresh_preset_combo(self) -> None:
@@ -481,7 +500,7 @@ class BookCaptureApp(QWidget):
     def _save_current_preset(self) -> None:
         preset_name = self.preset_name_input.text().strip()
         if not preset_name:
-            self.status_label.setText("Salvataggio preset non eseguito: inserire un nome preset")
+            self._show_status_message("Salvataggio preset non eseguito: inserire un nome preset")
             return
 
         exists = preset_name in self.presets
@@ -494,30 +513,30 @@ class BookCaptureApp(QWidget):
         if index >= 0:
             self.preset_combo.setCurrentIndex(index)
         if exists:
-            self.status_label.setText(f"Preset sovrascritto: {preset_name}")
+            self._show_status_message(f"Preset sovrascritto: {preset_name}")
         else:
-            self.status_label.setText(f"Preset salvato: {preset_name}")
+            self._show_status_message(f"Preset salvato: {preset_name}")
 
     def _load_selected_preset(self) -> None:
         preset_name = self.preset_combo.currentData()
         if not preset_name or preset_name not in self.presets:
-            self.status_label.setText("Caricamento preset non eseguito: nessun preset selezionato")
+            self._show_status_message("Caricamento preset non eseguito: nessun preset selezionato")
             return
 
         self._apply_postprocess_settings(self.presets[preset_name])
-        self.status_label.setText(f"Preset caricato: {preset_name}")
+        self._show_status_message(f"Preset caricato: {preset_name}")
 
     def _delete_selected_preset(self) -> None:
         preset_name = self.preset_combo.currentData()
         if not preset_name or preset_name not in self.presets:
-            self.status_label.setText("Eliminazione preset non eseguita: nessun preset selezionato")
+            self._show_status_message("Eliminazione preset non eseguita: nessun preset selezionato")
             return
 
         del self.presets[preset_name]
         if not self._save_presets_to_disk():
             return
         self._refresh_preset_combo()
-        self.status_label.setText(f"Preset eliminato: {preset_name}")
+        self._show_status_message(f"Preset eliminato: {preset_name}")
 
     def _sanitize_session_name(self, raw_name: str) -> str:
         candidate = (raw_name or "").strip().replace(" ", "_")
@@ -611,7 +630,7 @@ class BookCaptureApp(QWidget):
         pixmap = QPixmap(str(path))
         if pixmap.isNull():
             self._clear_session_image_preview("Anteprima non disponibile")
-            self.status_label.setText(f"Immagine non leggibile: {path.name}")
+            self._show_status_message(f"Immagine non leggibile: {path.name}")
             return
 
         scaled = pixmap.scaled(
@@ -682,36 +701,36 @@ class BookCaptureApp(QWidget):
 
     def _rotate_selected_page(self, clockwise: bool) -> None:
         if self.current_session_dir is None:
-            self.status_label.setText("Rotazione non eseguita: nessuna sessione attiva")
+            self._show_status_message("Rotazione non eseguita: nessuna sessione attiva")
             return
 
         original_path = self._selected_original_path()
         if original_path is None:
-            self.status_label.setText("Rotazione non eseguita: seleziona una pagina nell'elenco")
+            self._show_status_message("Rotazione non eseguita: seleziona una pagina nell'elenco")
             return
         if not original_path.exists():
-            self.status_label.setText("Rotazione non eseguita: originale corrispondente non trovato")
+            self._show_status_message("Rotazione non eseguita: originale corrispondente non trovato")
             return
 
         auto_stop_note = self._stop_continuous_if_needed("la rotazione")
         rotate_ok, rotate_error = self._rotate_image_file(original_path, clockwise=clockwise)
         if not rotate_ok:
-            self.status_label.setText(f"{auto_stop_note}Rotazione non riuscita: {rotate_error}")
+            self._show_status_message(f"{auto_stop_note}Rotazione non riuscita: {rotate_error}")
             self._refresh_session_file_list()
             return
 
         removed_ok, removed, remove_error = self._remove_processed_for_original(original_path)
         if not removed_ok:
-            self.status_label.setText(
+            self._show_status_message(
                 f"{auto_stop_note}Pagina ruotata ma rimozione elaborata non riuscita: {remove_error}"
             )
         elif removed:
-            self.status_label.setText(
+            self._show_status_message(
                 f"{auto_stop_note}Pagina ruotata con successo: {original_path.name} | "
                 "Originale ruotato; versione elaborata rimossa, rigenerarla se necessario"
             )
         else:
-            self.status_label.setText(f"{auto_stop_note}Pagina ruotata con successo: {original_path.name}")
+            self._show_status_message(f"{auto_stop_note}Pagina ruotata con successo: {original_path.name}")
 
         self._update_session_labels()
         source = self.browser_source_selector.currentData()
@@ -745,18 +764,18 @@ class BookCaptureApp(QWidget):
 
     def _regenerate_processed_for_selected_page(self) -> None:
         if self.current_session_dir is None:
-            self.status_label.setText("Rigenerazione non eseguita: nessuna sessione attiva")
+            self._show_status_message("Rigenerazione non eseguita: nessuna sessione attiva")
             return
 
         original_path = self._selected_original_path()
         if original_path is None:
-            self.status_label.setText("Rigenerazione non eseguita: seleziona una pagina nell'elenco")
+            self._show_status_message("Rigenerazione non eseguita: seleziona una pagina nell'elenco")
             return
 
         auto_stop_note = self._stop_continuous_if_needed("la rigenerazione")
         ok, message = self._regenerate_processed_for_original(original_path)
         if not ok:
-            self.status_label.setText(f"{auto_stop_note}Rigenerazione non riuscita: {message}")
+            self._show_status_message(f"{auto_stop_note}Rigenerazione non riuscita: {message}")
             self._refresh_session_file_list()
             return
 
@@ -767,22 +786,22 @@ class BookCaptureApp(QWidget):
         else:
             selected_path = original_path
         self._refresh_session_file_list(selected_path=selected_path)
-        self.status_label.setText(f"{auto_stop_note}{message}")
+        self._show_status_message(f"{auto_stop_note}{message}")
 
     def _regenerate_processed_for_last_page(self) -> None:
         if self.current_session_dir is None:
-            self.status_label.setText("Rigenerazione non eseguita: nessuna sessione attiva")
+            self._show_status_message("Rigenerazione non eseguita: nessuna sessione attiva")
             return
 
         last_original = self._find_last_original_page()
         if last_original is None:
-            self.status_label.setText("Rigenerazione non eseguita: nessuna pagina presente nella sessione")
+            self._show_status_message("Rigenerazione non eseguita: nessuna pagina presente nella sessione")
             return
 
         auto_stop_note = self._stop_continuous_if_needed("la rigenerazione")
         ok, message = self._regenerate_processed_for_original(last_original)
         if not ok:
-            self.status_label.setText(f"{auto_stop_note}Rigenerazione non riuscita: {message}")
+            self._show_status_message(f"{auto_stop_note}Rigenerazione non riuscita: {message}")
             self._refresh_session_file_list()
             return
 
@@ -793,7 +812,7 @@ class BookCaptureApp(QWidget):
         else:
             selected_path = last_original
         self._refresh_session_file_list(selected_path=selected_path)
-        self.status_label.setText(f"{auto_stop_note}{message}")
+        self._show_status_message(f"{auto_stop_note}{message}")
 
     def _move_selected_page_up(self) -> None:
         self._move_selected_page(direction=-1)
@@ -803,18 +822,18 @@ class BookCaptureApp(QWidget):
 
     def _move_selected_page(self, direction: int) -> None:
         if self.current_session_dir is None:
-            self.status_label.setText("Riordino non eseguito: nessuna sessione attiva")
+            self._show_status_message("Riordino non eseguito: nessuna sessione attiva")
             return
 
         selected_original = self._selected_original_page_name()
         if selected_original is None:
-            self.status_label.setText("Riordino non eseguito: seleziona una pagina nell'elenco")
+            self._show_status_message("Riordino non eseguito: seleziona una pagina nell'elenco")
             return
 
         originals_dir = self._session_originals_dir()
         ordered_originals = sorted(originals_dir.glob("page_*.jpg"), key=lambda p: p.name)
         if not ordered_originals:
-            self.status_label.setText("Riordino non eseguito: nessuna pagina presente nella sessione")
+            self._show_status_message("Riordino non eseguito: nessuna pagina presente nella sessione")
             return
 
         auto_stop_note = ""
@@ -829,7 +848,7 @@ class BookCaptureApp(QWidget):
         )
         if not reorder_ok:
             prefix = f"{auto_stop_note}" if auto_stop_note else ""
-            self.status_label.setText(f"{prefix}Riordino non riuscito: {error}")
+            self._show_status_message(f"{prefix}Riordino non riuscito: {error}")
             self._refresh_session_file_list()
             self._update_session_labels()
             return
@@ -843,7 +862,7 @@ class BookCaptureApp(QWidget):
         else:
             selected_path = selected_original_path
         self._refresh_session_file_list(selected_path=selected_path)
-        self.status_label.setText(f"{auto_stop_note}Pagina riordinata con successo: {new_selected_name}")
+        self._show_status_message(f"{auto_stop_note}Pagina riordinata con successo: {new_selected_name}")
 
     def _reorder_original_pages(
         self,
@@ -948,16 +967,16 @@ class BookCaptureApp(QWidget):
 
     def _delete_last_page(self) -> None:
         if self.current_session_dir is None:
-            self.status_label.setText("Eliminazione non eseguita: nessuna sessione attiva")
+            self._show_status_message("Eliminazione non eseguita: nessuna sessione attiva")
             return
 
         if self.continuous_state in (self.CONTINUOUS_RUNNING, self.CONTINUOUS_PAUSED):
             self.stop_continuous_capture(update_status=False)
-            self.status_label.setText("Acquisizione continua fermata automaticamente prima dell'eliminazione")
+            self._show_status_message("Acquisizione continua fermata automaticamente prima dell'eliminazione")
 
         last_original = self._find_last_original_page()
         if last_original is None:
-            self.status_label.setText("Eliminazione non eseguita: nessuna pagina presente nella sessione")
+            self._show_status_message("Eliminazione non eseguita: nessuna pagina presente nella sessione")
             self._refresh_session_file_list()
             self._update_session_labels()
             return
@@ -968,13 +987,13 @@ class BookCaptureApp(QWidget):
             if processed_path.exists():
                 processed_path.unlink(missing_ok=True)
         except Exception as exc:
-            self.status_label.setText(f"Errore eliminazione ultima pagina: {exc}")
+            self._show_error_message(f"Errore eliminazione ultima pagina: {exc}")
             self._refresh_session_file_list()
             self._update_session_labels()
             return
 
         self._update_session_labels()
-        self.status_label.setText(f"Ultima pagina eliminata: {last_original.name}")
+        self._show_status_message(f"Ultima pagina eliminata: {last_original.name}")
         self._refresh_session_file_list()
 
     def _create_new_session(self, requested_name: str | None = None) -> bool:
@@ -985,7 +1004,7 @@ class BookCaptureApp(QWidget):
             (session_dir / "originals").mkdir(parents=True, exist_ok=True)
             (session_dir / "processed").mkdir(parents=True, exist_ok=True)
         except Exception as exc:
-            self.status_label.setText(f"Errore: creazione sessione non riuscita ({exc})")
+            self._show_error_message(f"Errore: creazione sessione non riuscita ({exc})")
             return False
 
         self.current_session_name = session_name
@@ -1001,23 +1020,23 @@ class BookCaptureApp(QWidget):
         if self.current_session_dir is not None:
             return
         if self._create_new_session(self._generate_default_session_name()):
-            self.status_label.setText(f"Sessione iniziale pronta: {self.current_session_name}")
+            self._show_status_message(f"Sessione iniziale pronta: {self.current_session_name}")
 
     def _on_new_session_clicked(self) -> None:
         if self.continuous_state in (self.CONTINUOUS_RUNNING, self.CONTINUOUS_PAUSED):
             self.stop_continuous_capture(update_status=False)
-            self.status_label.setText("Acquisizione continua fermata automaticamente prima della nuova sessione")
+            self._show_status_message("Acquisizione continua fermata automaticamente prima della nuova sessione")
 
         requested = self.session_name_input.text()
         if self._create_new_session(requested):
-            self.status_label.setText(f"Nuova sessione attiva: {self.current_session_name}")
+            self._show_status_message(f"Nuova sessione attiva: {self.current_session_name}")
             self.session_name_input.clear()
 
     def _init_camera(self) -> None:
         self.cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
 
         if not self.cap or not self.cap.isOpened():
-            self.status_label.setText(f"Errore: impossibile aprire {self.device_path}")
+            self._show_error_message(f"Errore: impossibile aprire {self.device_path}")
             self.capture_button.setEnabled(False)
             self.start_continuous_button.setEnabled(False)
             return
@@ -1025,7 +1044,7 @@ class BookCaptureApp(QWidget):
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-        self.status_label.setText(f"Camera aperta: {self.device_path}")
+        self._show_status_message(f"Camera aperta: {self.device_path}")
         self.capture_button.setEnabled(True)
         self.start_continuous_button.setEnabled(True)
 
@@ -1160,7 +1179,7 @@ class BookCaptureApp(QWidget):
 
         ok, frame = self.cap.read()
         if not ok or frame is None:
-            self.status_label.setText("Errore: lettura frame non riuscita")
+            self._show_error_message("Errore: lettura frame non riuscita")
             return
 
         self.last_frame = frame
@@ -1184,9 +1203,9 @@ class BookCaptureApp(QWidget):
     def _save_original_frame(self, frame, source: str, save_path: Path) -> bool:
         success = cv2.imwrite(str(save_path), frame)
         if success:
-            self.status_label.setText(f"Foto salvata ({source}): {save_path}")
+            self._show_status_message(f"Foto salvata ({source}): {save_path}")
             return True
-        self.status_label.setText(f"Errore: salvataggio foto {source} non riuscito")
+        self._show_error_message(f"Errore: salvataggio foto {source} non riuscito")
         return False
 
     @staticmethod
@@ -1427,11 +1446,11 @@ class BookCaptureApp(QWidget):
 
     def _save_last_frame(self, source: str) -> bool:
         if self.last_frame is None:
-            self.status_label.setText(f"Errore: nessun frame valido per scatto {source}")
+            self._show_error_message(f"Errore: nessun frame valido per scatto {source}")
             return False
 
         if self.current_session_dir is None:
-            self.status_label.setText("Errore: nessuna sessione attiva")
+            self._show_error_message("Errore: nessuna sessione attiva")
             return False
 
         save_path = self._next_capture_path()
@@ -1448,16 +1467,16 @@ class BookCaptureApp(QWidget):
         try:
             processed_ok, message = self._save_processed_frame(save_path, original_frame)
         except Exception:
-            self.status_label.setText(
+            self._show_status_message(
                 f"Foto salvata ({source}): {save_path} | Elaborazione non riuscita (errore inatteso)"
             )
             self._update_session_labels()
             return True
 
         if processed_ok:
-            self.status_label.setText(f"Foto salvata ({source}): {save_path}" + (f" | {message}" if message else ""))
+            self._show_status_message(f"Foto salvata ({source}): {save_path}" + (f" | {message}" if message else ""))
         else:
-            self.status_label.setText(f"Foto salvata ({source}): {save_path} | {message}")
+            self._show_status_message(f"Foto salvata ({source}): {save_path} | {message}")
 
         self._update_session_labels()
         source = self.browser_source_selector.currentData()
@@ -1470,7 +1489,7 @@ class BookCaptureApp(QWidget):
 
     def _export_session_pdf(self) -> None:
         if self.current_session_dir is None or self.current_session_name is None:
-            self.status_label.setText("Errore: nessuna sessione attiva per export PDF")
+            self._show_error_message("Errore: nessuna sessione attiva per export PDF")
             return
 
         source = self.pdf_source_selector.currentData()
@@ -1486,7 +1505,7 @@ class BookCaptureApp(QWidget):
         image_paths = sorted(image_dir.glob(pattern))
         if not image_paths:
             label = "elaborate" if source == "processed" else "originali"
-            self.status_label.setText(f"Export PDF non eseguito: nessuna immagine {label} nella sessione corrente")
+            self._show_status_message(f"Export PDF non eseguito: nessuna immagine {label} nella sessione corrente")
             return
 
         pdf_path = self.current_session_dir / pdf_name
@@ -1498,9 +1517,9 @@ class BookCaptureApp(QWidget):
 
             first, *rest = pil_images
             first.save(pdf_path, save_all=True, append_images=rest)
-            self.status_label.setText(f"PDF esportato con successo: {pdf_path}")
+            self._show_status_message(f"PDF esportato con successo: {pdf_path}")
         except Exception as exc:
-            self.status_label.setText(f"Errore durante export PDF: {exc}")
+            self._show_error_message(f"Errore durante export PDF: {exc}")
         finally:
             for img in pil_images:
                 img.close()
@@ -1513,7 +1532,7 @@ class BookCaptureApp(QWidget):
             return
 
         if not self.cap or not self.cap.isOpened():
-            self.status_label.setText("Errore: camera non disponibile per acquisizione continua")
+            self._show_error_message("Errore: camera non disponibile per acquisizione continua")
             return
 
         self._reset_continuous_session()
@@ -1521,7 +1540,7 @@ class BookCaptureApp(QWidget):
         self._schedule_next_deadline_from_now()
         self.continuous_timer.start(self.continuous_interval_ms)
         self.continuous_state = self.CONTINUOUS_RUNNING
-        self.status_label.setText(
+        self._show_status_message(
             f"Acquisizione continua attiva: uno scatto ogni {self.continuous_interval_ms // 1000} secondi"
         )
         self._refresh_session_info_labels()
@@ -1536,7 +1555,7 @@ class BookCaptureApp(QWidget):
 
         self.continuous_timer.stop()
         self.continuous_state = self.CONTINUOUS_PAUSED
-        self.status_label.setText("Acquisizione continua in pausa")
+        self._show_status_message("Acquisizione continua in pausa")
         self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
@@ -1549,7 +1568,7 @@ class BookCaptureApp(QWidget):
         self._schedule_next_deadline_from_now()
         self.continuous_timer.start(self.continuous_interval_ms)
         self.continuous_state = self.CONTINUOUS_RUNNING
-        self.status_label.setText(
+        self._show_status_message(
             f"Acquisizione continua ripresa: uno scatto ogni {self.continuous_interval_ms // 1000} secondi"
         )
         self._refresh_session_info_labels()
@@ -1563,7 +1582,7 @@ class BookCaptureApp(QWidget):
         self.next_capture_deadline = None
         self.paused_remaining_ms = None
         if update_status:
-            self.status_label.setText("Acquisizione continua fermata")
+            self._show_status_message("Acquisizione continua fermata")
         self._refresh_session_info_labels()
         self._update_continuous_buttons()
 
