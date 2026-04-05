@@ -72,6 +72,34 @@ What `install.sh` does:
 - Installs desktop entry in `~/.local/share/applications/`
 - Uses `assets/icon.png` if available
 
+### Option C — Build a portable AppImage
+
+This project also includes a dedicated AppImage build flow that does **not** replace `install.sh`.
+
+Build prerequisites (Ubuntu/Debian example):
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip rsync curl
+```
+
+Build command:
+
+```bash
+./appimage/build-appimage.sh
+```
+
+Result:
+
+- Output file is created in `dist/`, for example:
+  - `dist/book-capture-x86_64.AppImage`
+- Run it with:
+
+```bash
+chmod +x dist/book-capture-*.AppImage
+./dist/book-capture-*.AppImage
+```
+
 ## Launching
 
 After install, launch with either:
@@ -172,6 +200,10 @@ Apply enhancements and export the final PDF.
 ├── install.sh
 ├── uninstall.sh
 ├── desktop/
+│   └── book-capture.desktop
+├── appimage/
+│   ├── AppRun
+│   ├── build-appimage.sh
 │   └── book-capture.desktop
 ├── assets/
 │   ├── icon.png                  # app icon used by installer (recommended)
