@@ -1,0 +1,7 @@
+Package: book-capture
+Version: 0.1
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: <placeholder>
+Description: Camera-based book scanning tool
