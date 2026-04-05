@@ -1087,6 +1087,75 @@ class BookCaptureApp(QMainWindow):
             self._show_status_message(f"Nuova sessione attiva: {self.current_session_name}")
             self.session_name_input.clear()
 
+    @staticmethod
+    def _camera_fourcc_name(fourcc_value: float) -> str:
+        fourcc_int = int(fourcc_value)
+        if fourcc_int <= 0:
+            return "unknown"
+
+        chars: list[str] = []
+        for shift in (0, 8, 16, 24):
+            byte = (fourcc_int >> shift) & 0xFF
+            chars.append(chr(byte) if 32 <= byte <= 126 else "?")
+        return "".join(chars)
+
+    def _try_open_camera_mode(
+        self,
+        width: int,
+        height: int,
+        preferred_fps: float = 15.0,
+        settle_seconds: float = 0.12,
+    ) -> tuple[bool, int, int, str]:
+        if not self.cap or not self.cap.isOpened():
+            return False, 0, 0, "unknown"
+
+        mjpg_fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+
+        try:
+            self.cap.set(cv2.CAP_PROP_FOURCC, mjpg_fourcc)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+            self.cap.set(cv2.CAP_PROP_FPS, float(preferred_fps))
+        except Exception:
+            return False, 0, 0, "unknown"
+
+        if settle_seconds > 0:
+            time.sleep(settle_seconds)
+
+        ok, frame = self.cap.read()
+        if not ok or frame is None:
+            return False, 0, 0, "unknown"
+
+        actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or int(frame.shape[1])
+        actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or int(frame.shape[0])
+        actual_fourcc = self._camera_fourcc_name(self.cap.get(cv2.CAP_PROP_FOURCC))
+
+        if frame.shape[1] <= 0 or frame.shape[0] <= 0:
+            return False, actual_w, actual_h, actual_fourcc
+
+        self.last_frame = frame
+        self._update_preview_from_frame(frame)
+        return True, actual_w, actual_h, actual_fourcc
+
+    def _initialize_camera_with_best_mode(self) -> tuple[bool, int, int, str, bool]:
+        desired_modes = [
+            (4320, 3240),
+            (3840, 2160),
+            (2560, 1440),
+            (1920, 1080),
+            (1280, 720),
+        ]
+
+        for index, (width, height) in enumerate(desired_modes):
+            ok, actual_w, actual_h, actual_fourcc = self._try_open_camera_mode(width=width, height=height)
+            if not ok:
+                continue
+
+            is_fallback = index == len(desired_modes) - 1
+            return True, actual_w, actual_h, actual_fourcc, is_fallback
+
+        return False, 0, 0, "unknown", False
+
     def _init_camera(self) -> None:
         self.cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
 
@@ -1096,10 +1165,18 @@ class BookCaptureApp(QMainWindow):
             self.start_continuous_button.setEnabled(False)
             return
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        ok, actual_w, actual_h, actual_fourcc, is_fallback = self._initialize_camera_with_best_mode()
+        if not ok:
+            self._show_error_message("Failed to initialize camera")
+            self.capture_button.setEnabled(False)
+            self.start_continuous_button.setEnabled(False)
+            return
 
-        self._show_status_message(f"Camera aperta: {self.device_path}")
+        mode_info = f"{actual_w}x{actual_h} {actual_fourcc}"
+        if is_fallback:
+            self._show_status_message(f"Camera ready: {mode_info} (fallback)")
+        else:
+            self._show_status_message(f"Camera ready: {mode_info}")
         self.capture_button.setEnabled(True)
         self.start_continuous_button.setEnabled(True)
 
