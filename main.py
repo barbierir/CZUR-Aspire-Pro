@@ -10,7 +10,7 @@ from uuid import uuid4
 import cv2
 import numpy as np
 from PIL import Image
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -56,6 +56,7 @@ class BookCaptureApp(QWidget):
 
         self.cap: cv2.VideoCapture | None = None
         self.last_frame = None
+        self.last_preview_pixmap: QPixmap | None = None
 
         self.continuous_state = self.CONTINUOUS_STOPPED
         self.continuous_interval_ms = 3000
@@ -94,6 +95,7 @@ class BookCaptureApp(QWidget):
         self.preview_label.setMinimumHeight(220)
         self.preview_label.setMaximumHeight(320)
         self.preview_label.setStyleSheet("background-color: #111; color: #ddd; border: 1px solid #444;")
+        self.preview_label.installEventFilter(self)
 
         self.session_status_label = QLabel("Sessione: ferma")
         self.session_count_label = QLabel("Scatti sessione: 0")
@@ -341,6 +343,47 @@ class BookCaptureApp(QWidget):
         self.setLayout(outer_layout)
 
         self._on_save_processed_toggled(False)
+        self._set_preview_placeholder()
+
+    def _set_preview_placeholder(self, text: str = "Anteprima non disponibile") -> None:
+        self.preview_label.clear()
+        self.preview_label.setText(text)
+
+    def _render_preview_pixmap(self, frame) -> QPixmap:
+        preview_frame = self._build_preview_with_overlay(frame)
+        frame_rgb = cv2.cvtColor(preview_frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame_rgb.shape
+        bytes_per_line = ch * w
+        image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        return QPixmap.fromImage(image.copy())
+
+    def _refresh_preview_widget(self) -> None:
+        if self.last_preview_pixmap is None or self.last_preview_pixmap.isNull():
+            self._set_preview_placeholder()
+            return
+
+        target_size = self.preview_label.size()
+        if target_size.width() <= 1 or target_size.height() <= 1:
+            return
+
+        scaled = self.last_preview_pixmap.scaled(
+            target_size,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.preview_label.setPixmap(scaled)
+
+    def _update_preview_from_frame(self, frame) -> None:
+        self.last_preview_pixmap = self._render_preview_pixmap(frame)
+        self._refresh_preview_widget()
+
+    def _handle_preview_resize(self) -> None:
+        self._refresh_preview_widget()
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.preview_label and event.type() == QEvent.Resize:
+            self._handle_preview_resize()
+        return super().eventFilter(watched, event)
 
     def _on_save_processed_toggled(self, enabled: bool) -> None:
         self.grayscale_checkbox.setEnabled(enabled)
@@ -1111,6 +1154,8 @@ class BookCaptureApp(QWidget):
         self._refresh_session_info_labels()
 
         if not self.cap or not self.cap.isOpened():
+            if self.last_preview_pixmap is None:
+                self._set_preview_placeholder()
             return
 
         ok, frame = self.cap.read()
@@ -1119,21 +1164,7 @@ class BookCaptureApp(QWidget):
             return
 
         self.last_frame = frame
-        preview_frame = self._build_preview_with_overlay(frame)
-
-        frame_rgb = cv2.cvtColor(preview_frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame_rgb.shape
-        bytes_per_line = ch * w
-
-        image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(image)
-
-        scaled = pixmap.scaled(
-            self.preview_label.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-        self.preview_label.setPixmap(scaled)
+        self._update_preview_from_frame(frame)
 
     def _next_capture_path(self) -> Path:
         originals_dir = self._session_originals_dir()
