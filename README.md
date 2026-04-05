@@ -100,6 +100,22 @@ chmod +x dist/book-capture-*.AppImage
 ./dist/book-capture-*.AppImage
 ```
 
+### Option D — Install via .deb
+
+Build prerequisites (Ubuntu/Debian example):
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv dpkg-dev
+```
+
+Build and install:
+
+```bash
+./deb/build-deb.sh
+sudo dpkg -i dist/book-capture_0.1_amd64.deb
+```
+
 ## Launching
 
 After install, launch with either:
