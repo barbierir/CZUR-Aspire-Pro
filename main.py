@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QGridLayout,
     QScrollArea,
     QListWidget,
     QListWidgetItem,
@@ -90,8 +91,8 @@ class BookCaptureApp(QWidget):
 
         self.preview_label = QLabel("Anteprima non disponibile")
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumHeight(260)
-        self.preview_label.setMaximumHeight(360)
+        self.preview_label.setMinimumHeight(220)
+        self.preview_label.setMaximumHeight(320)
         self.preview_label.setStyleSheet("background-color: #111; color: #ddd; border: 1px solid #444;")
 
         self.session_status_label = QLabel("Sessione: ferma")
@@ -132,6 +133,8 @@ class BookCaptureApp(QWidget):
         session_input_layout.addWidget(self.new_session_button)
 
         session_layout = QVBoxLayout()
+        session_layout.setContentsMargins(8, 8, 8, 8)
+        session_layout.setSpacing(6)
         session_layout.addLayout(session_input_layout)
         session_layout.addWidget(self.active_session_dir_label)
         session_layout.addWidget(self.pages_in_session_label)
@@ -147,13 +150,16 @@ class BookCaptureApp(QWidget):
 
         self.save_processed_checkbox.toggled.connect(self._on_save_processed_toggled)
 
-        pp_layout = QVBoxLayout()
-        pp_layout.addWidget(self.save_processed_checkbox)
-        pp_layout.addWidget(self.grayscale_checkbox)
-        pp_layout.addWidget(self.scanner_checkbox)
-        pp_layout.addWidget(self.doc_crop_checkbox)
-        pp_layout.addWidget(self.perspective_checkbox)
-        pp_layout.addWidget(self.flattening_checkbox)
+        pp_layout = QGridLayout()
+        pp_layout.setContentsMargins(8, 8, 8, 8)
+        pp_layout.setHorizontalSpacing(12)
+        pp_layout.setVerticalSpacing(6)
+        pp_layout.addWidget(self.save_processed_checkbox, 0, 0)
+        pp_layout.addWidget(self.grayscale_checkbox, 0, 1)
+        pp_layout.addWidget(self.scanner_checkbox, 1, 0)
+        pp_layout.addWidget(self.doc_crop_checkbox, 1, 1)
+        pp_layout.addWidget(self.perspective_checkbox, 2, 0)
+        pp_layout.addWidget(self.flattening_checkbox, 2, 1)
         self.post_process_group.setLayout(pp_layout)
 
         self.preset_group = QGroupBox("Preset post-processing")
@@ -180,6 +186,8 @@ class BookCaptureApp(QWidget):
         preset_load_layout.addWidget(self.delete_preset_button)
 
         preset_layout = QVBoxLayout()
+        preset_layout.setContentsMargins(8, 8, 8, 8)
+        preset_layout.setSpacing(6)
         preset_layout.addLayout(preset_name_layout)
         preset_layout.addLayout(preset_load_layout)
         self.preset_group.setLayout(preset_layout)
@@ -192,6 +200,8 @@ class BookCaptureApp(QWidget):
         self.export_pdf_button.clicked.connect(self._export_session_pdf)
 
         export_layout = QHBoxLayout()
+        export_layout.setContentsMargins(8, 8, 8, 8)
+        export_layout.setSpacing(6)
         export_layout.addWidget(QLabel("Sorgente PDF:"))
         export_layout.addWidget(self.pdf_source_selector)
         export_layout.addWidget(self.export_pdf_button)
@@ -230,14 +240,16 @@ class BookCaptureApp(QWidget):
 
         self.session_file_list_widget = QListWidget()
         self.session_file_list_widget.currentRowChanged.connect(self._load_selected_session_image_preview)
-        self.session_file_list_widget.setMinimumWidth(280)
+        self.session_file_list_widget.setMinimumWidth(220)
 
         self.session_image_preview_label = QLabel("Nessuna immagine selezionata")
         self.session_image_preview_label.setAlignment(Qt.AlignCenter)
-        self.session_image_preview_label.setMinimumSize(300, 220)
+        self.session_image_preview_label.setMinimumSize(320, 200)
         self.session_image_preview_label.setStyleSheet("background-color: #151515; color: #ddd; border: 1px solid #444;")
 
         browser_controls_layout = QHBoxLayout()
+        browser_controls_layout.setContentsMargins(8, 6, 8, 6)
+        browser_controls_layout.setSpacing(6)
         browser_controls_layout.addWidget(QLabel("Sorgente elenco:"))
         browser_controls_layout.addWidget(self.browser_source_selector)
         browser_controls_layout.addWidget(self.refresh_list_button)
@@ -251,10 +263,14 @@ class BookCaptureApp(QWidget):
         browser_controls_layout.addStretch()
 
         browser_content_layout = QHBoxLayout()
+        browser_content_layout.setContentsMargins(8, 0, 8, 8)
+        browser_content_layout.setSpacing(8)
         browser_content_layout.addWidget(self.session_file_list_widget, 1)
-        browser_content_layout.addWidget(self.session_image_preview_label, 2)
+        browser_content_layout.addWidget(self.session_image_preview_label, 3)
 
         browser_layout = QVBoxLayout()
+        browser_layout.setContentsMargins(0, 0, 0, 0)
+        browser_layout.setSpacing(0)
         browser_layout.addLayout(browser_controls_layout)
         browser_layout.addLayout(browser_content_layout)
         self.session_pages_group.setLayout(browser_layout)
@@ -263,6 +279,8 @@ class BookCaptureApp(QWidget):
         self.exit_button.clicked.connect(self.close)
 
         button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(8, 6, 8, 8)
+        button_layout.setSpacing(6)
         button_layout.addWidget(self.capture_button)
         button_layout.addWidget(self.start_continuous_button)
         button_layout.addWidget(self.pause_button)
@@ -275,14 +293,40 @@ class BookCaptureApp(QWidget):
 
         scroll_content_widget = QWidget()
         scroll_content_layout = QVBoxLayout(scroll_content_widget)
+        scroll_content_layout.setContentsMargins(10, 8, 10, 8)
+        scroll_content_layout.setSpacing(8)
         scroll_content_layout.addWidget(self.preview_label)
-        scroll_content_layout.addWidget(self.session_status_label)
-        scroll_content_layout.addWidget(self.session_count_label)
-        scroll_content_layout.addWidget(self.status_label)
-        scroll_content_layout.addWidget(self.work_session_group)
-        scroll_content_layout.addWidget(self.post_process_group)
-        scroll_content_layout.addWidget(self.preset_group)
-        scroll_content_layout.addWidget(self.export_group)
+
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(12)
+        status_layout.addWidget(self.session_status_label)
+        status_layout.addWidget(self.session_count_label)
+        status_layout.addWidget(self.status_label, 1)
+        scroll_content_layout.addLayout(status_layout)
+
+        central_layout = QHBoxLayout()
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(8)
+
+        left_column_layout = QVBoxLayout()
+        left_column_layout.setContentsMargins(0, 0, 0, 0)
+        left_column_layout.setSpacing(8)
+        left_column_layout.addWidget(self.work_session_group)
+        left_column_layout.addWidget(self.preset_group)
+        left_column_layout.addWidget(self.export_group)
+        left_column_layout.addStretch()
+
+        right_column_layout = QVBoxLayout()
+        right_column_layout.setContentsMargins(0, 0, 0, 0)
+        right_column_layout.setSpacing(8)
+        right_column_layout.addWidget(self.post_process_group)
+        right_column_layout.addStretch()
+
+        central_layout.addLayout(left_column_layout, 3)
+        central_layout.addLayout(right_column_layout, 2)
+
+        scroll_content_layout.addLayout(central_layout)
         scroll_content_layout.addWidget(self.session_pages_group)
         scroll_content_layout.addStretch()
 
