@@ -61,6 +61,11 @@ class BookCaptureApp(QMainWindow):
         self.cap: cv2.VideoCapture | None = None
         self.last_frame = None
         self.last_preview_pixmap: QPixmap | None = None
+        self.camera_retry_attempt = 0
+        self.camera_retry_max_attempts = 5
+        self.camera_retry_delay_ms = 1000
+        self.camera_retry_in_progress = False
+        self.camera_retry_generation = 0
 
         self.continuous_state = self.CONTINUOUS_STOPPED
         self.continuous_interval_ms = 3000
@@ -71,7 +76,7 @@ class BookCaptureApp(QMainWindow):
 
         self._build_ui()
         self._setup_shortcuts()
-        self._init_camera()
+        self._start_camera_initialization()
         self._ensure_default_session()
 
         self.preview_timer = QTimer(self)
@@ -108,6 +113,8 @@ class BookCaptureApp(QMainWindow):
 
         self.capture_button = QPushButton("Scatta foto")
         self.capture_button.clicked.connect(self.capture_photo)
+        self.reconnect_camera_button = QPushButton("Reconnect camera")
+        self.reconnect_camera_button.clicked.connect(self._reconnect_camera)
 
         self.start_continuous_button = QPushButton("Avvia acquisizione continua")
         self.start_continuous_button.clicked.connect(self.start_continuous_capture)
@@ -294,6 +301,7 @@ class BookCaptureApp(QMainWindow):
         button_layout.setContentsMargins(8, 6, 8, 8)
         button_layout.setSpacing(6)
         button_layout.addWidget(self.capture_button)
+        button_layout.addWidget(self.reconnect_camera_button)
         button_layout.addWidget(self.start_continuous_button)
         button_layout.addWidget(self.pause_button)
         button_layout.addWidget(self.resume_button)
@@ -364,7 +372,9 @@ class BookCaptureApp(QMainWindow):
 
         self._on_save_processed_toggled(False)
         self._set_preview_placeholder()
-        self._show_status_message("Stato: inizializzazione...")
+        self.capture_button.setEnabled(False)
+        self.start_continuous_button.setEnabled(False)
+        self._show_status_message("Initializing camera...")
 
     def _setup_shortcuts(self) -> None:
         self.shortcuts: list[QShortcut] = []
@@ -1156,29 +1166,77 @@ class BookCaptureApp(QMainWindow):
 
         return False, 0, 0, "unknown", False
 
-    def _init_camera(self) -> None:
+    def _reset_camera_state(self, placeholder_text: str = "Camera not available") -> None:
+        if self.cap is not None and self.cap.isOpened():
+            self.cap.release()
+        self.cap = None
+        self.last_frame = None
+        self.last_preview_pixmap = None
+        self._set_preview_placeholder(placeholder_text)
+        self.capture_button.setEnabled(False)
+        self.start_continuous_button.setEnabled(False)
+        self._update_continuous_buttons()
+
+    def _start_camera_initialization(self) -> None:
+        self.camera_retry_generation += 1
+        self.camera_retry_attempt = 0
+        self.camera_retry_in_progress = True
+        self._reset_camera_state(placeholder_text="Initializing camera...")
+        self._show_status_message("Initializing camera...")
+        generation = self.camera_retry_generation
+        QTimer.singleShot(0, lambda gen=generation: self._attempt_camera_initialization(gen))
+
+    def _schedule_camera_retry(self, generation: int) -> None:
+        if self.camera_retry_attempt >= self.camera_retry_max_attempts:
+            self.camera_retry_in_progress = False
+            self._reset_camera_state("Camera not available")
+            self._show_error_message(
+                f"Failed to initialize camera after {self.camera_retry_max_attempts} attempts",
+                timeout_ms=9000,
+            )
+            return
+
+        next_attempt = self.camera_retry_attempt + 1
+        self._show_status_message(
+            f"Camera init failed, retrying ({next_attempt}/{self.camera_retry_max_attempts})...",
+            timeout_ms=max(1000, self.camera_retry_delay_ms),
+        )
+        QTimer.singleShot(
+            self.camera_retry_delay_ms,
+            lambda gen=generation: self._attempt_camera_initialization(gen),
+        )
+
+    def _attempt_camera_initialization(self, generation: int) -> None:
+        if generation != self.camera_retry_generation:
+            return
+
+        self.camera_retry_attempt += 1
+        self._reset_camera_state(placeholder_text="Initializing camera...")
+
         self.cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
 
         if not self.cap or not self.cap.isOpened():
-            self._show_error_message(f"Errore: impossibile aprire {self.device_path}")
-            self.capture_button.setEnabled(False)
-            self.start_continuous_button.setEnabled(False)
+            self._schedule_camera_retry(generation)
             return
 
         ok, actual_w, actual_h, actual_fourcc, is_fallback = self._initialize_camera_with_best_mode()
         if not ok:
-            self._show_error_message("Failed to initialize camera")
-            self.capture_button.setEnabled(False)
-            self.start_continuous_button.setEnabled(False)
+            self._schedule_camera_retry(generation)
             return
 
+        self.camera_retry_in_progress = False
         mode_info = f"{actual_w}x{actual_h} {actual_fourcc}"
         if is_fallback:
             self._show_status_message(f"Camera ready: {mode_info} (fallback)")
         else:
             self._show_status_message(f"Camera ready: {mode_info}")
         self.capture_button.setEnabled(True)
-        self.start_continuous_button.setEnabled(True)
+        self._update_continuous_buttons()
+
+    def _reconnect_camera(self) -> None:
+        self._show_status_message("Reconnect requested")
+        self.stop_continuous_capture(update_status=False)
+        self._start_camera_initialization()
 
     def _selected_interval_ms(self) -> int:
         value = self.interval_selector.currentData()
