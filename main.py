@@ -1,6 +1,11 @@
 import re
+import math
+import shutil
+import struct
+import subprocess
 import sys
 import time
+import wave
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -73,6 +78,8 @@ class BookCaptureApp(QMainWindow):
         self.paused_remaining_ms: int | None = None
         self.session_capture_count = 0
         self._beep_played_for_cycle = False
+        self._beep_player_command = self._find_available_audio_player()
+        self._beep_sound_file: Path | None = None
 
         self._build_ui()
         self._setup_shortcuts()
@@ -1389,8 +1396,67 @@ class BookCaptureApp(QMainWindow):
 
         remaining_s = self._countdown_remaining_seconds()
         if 0.0 < remaining_s <= self.PRE_CAPTURE_BEEP_THRESHOLD_SECONDS:
-            QApplication.beep()
+            self._play_beep_sound()
             self._beep_played_for_cycle = True
+
+    def _find_available_audio_player(self) -> list[str] | None:
+        paplay = shutil.which("paplay")
+        if paplay:
+            return [paplay]
+
+        aplay = shutil.which("aplay")
+        if aplay:
+            return [aplay, "-q"]
+
+        return None
+
+    def _ensure_beep_sound_file(self) -> Path | None:
+        if self._beep_sound_file and self._beep_sound_file.exists():
+            return self._beep_sound_file
+
+        beep_path = self.capture_dir / ".pre_capture_beep.wav"
+        if beep_path.exists():
+            self._beep_sound_file = beep_path
+            return self._beep_sound_file
+
+        sample_rate = 44100
+        duration_s = 0.15
+        frequency_hz = 880.0
+        amplitude = 0.35
+        total_samples = int(sample_rate * duration_s)
+
+        try:
+            with wave.open(str(beep_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(sample_rate)
+
+                for sample_idx in range(total_samples):
+                    sample_value = int(
+                        32767 * amplitude * math.sin((2.0 * math.pi * frequency_hz * sample_idx) / sample_rate)
+                    )
+                    wav_file.writeframesraw(struct.pack("<h", sample_value))
+        except Exception:
+            return None
+
+        self._beep_sound_file = beep_path
+        return self._beep_sound_file
+
+    def _play_beep_sound(self) -> None:
+        beep_sound_file = self._ensure_beep_sound_file()
+        if self._beep_player_command and beep_sound_file is not None:
+            try:
+                subprocess.Popen(
+                    [*self._beep_player_command, str(beep_sound_file)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return
+            except Exception:
+                pass
+
+        QApplication.beep()
 
     def _update_countdown_status(self) -> None:
         if self.continuous_state != self.CONTINUOUS_RUNNING:
