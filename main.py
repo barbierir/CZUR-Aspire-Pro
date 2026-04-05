@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QScrollArea,
     QListWidget,
     QListWidgetItem,
     QGroupBox,
@@ -84,11 +85,13 @@ class BookCaptureApp(QWidget):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("Book Capture")
-        self.resize(980, 680)
+        self.resize(1100, 760)
+        self.setMinimumSize(900, 620)
 
         self.preview_label = QLabel("Anteprima non disponibile")
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(800, 450)
+        self.preview_label.setMinimumHeight(260)
+        self.preview_label.setMaximumHeight(360)
         self.preview_label.setStyleSheet("background-color: #111; color: #ddd; border: 1px solid #444;")
 
         self.session_status_label = QLabel("Sessione: ferma")
@@ -270,18 +273,28 @@ class BookCaptureApp(QWidget):
         button_layout.addWidget(self.interval_selector)
         button_layout.addWidget(self.exit_button)
 
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(self.preview_label)
-        main_layout.addWidget(self.session_status_label)
-        main_layout.addWidget(self.session_count_label)
-        main_layout.addWidget(self.status_label)
-        main_layout.addWidget(self.work_session_group)
-        main_layout.addWidget(self.post_process_group)
-        main_layout.addWidget(self.preset_group)
-        main_layout.addWidget(self.export_group)
-        main_layout.addWidget(self.session_pages_group)
-        main_layout.addLayout(button_layout)
-        self.setLayout(main_layout)
+        scroll_content_widget = QWidget()
+        scroll_content_layout = QVBoxLayout(scroll_content_widget)
+        scroll_content_layout.addWidget(self.preview_label)
+        scroll_content_layout.addWidget(self.session_status_label)
+        scroll_content_layout.addWidget(self.session_count_label)
+        scroll_content_layout.addWidget(self.status_label)
+        scroll_content_layout.addWidget(self.work_session_group)
+        scroll_content_layout.addWidget(self.post_process_group)
+        scroll_content_layout.addWidget(self.preset_group)
+        scroll_content_layout.addWidget(self.export_group)
+        scroll_content_layout.addWidget(self.session_pages_group)
+        scroll_content_layout.addStretch()
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setWidget(scroll_content_widget)
+
+        outer_layout = QVBoxLayout()
+        outer_layout.addWidget(scroll_area, 1)
+        outer_layout.addLayout(button_layout, 0)
+        self.setLayout(outer_layout)
 
         self._on_save_processed_toggled(False)
 
